@@ -1,0 +1,63 @@
+#!/bin/sh
+# M0 客户机 init。
+# 目标：一秒内起来、配好网、给一个带控制终端的 shell，并在 ttyS1 上报状态。
+# 这个文件会被原样放到 initramfs 的 /init。
+
+BB=/usr/bin/busybox
+$BB mkdir -p /proc /sys /dev /tmp /run /bin /sbin /etc
+$BB mount -t proc     proc     /proc
+$BB mount -t sysfs    sysfs    /sys
+$BB mount -t devtmpfs devtmpfs /dev 2>/dev/null
+$BB --install -s /bin
+export PATH=/bin:/sbin:/usr/bin:/usr/sbin
+export HOME=/root; mkdir -p /root
+
+# 网卡驱动：virtio_net 首选，e1000 兜底
+for m in virtio_pci virtio_net e1000; do modprobe $m 2>/dev/null; done
+
+# 配置来自内核 cmdline： m0.ip=10.0.0.1/24  m0.host=alpha
+IP=""; HOST="m0"
+for x in $(cat /proc/cmdline); do
+  case "$x" in
+    m0.ip=*)   IP="${x#m0.ip=}"     ;;
+    m0.host=*) HOST="${x#m0.host=}" ;;
+  esac
+done
+
+hostname "$HOST"
+echo "$HOST" > /etc/hostname
+ip link set lo up
+ip link set eth0 up 2>/dev/null
+[ -n "$IP" ] && ip addr add "$IP" dev eth0 2>/dev/null
+
+# 隐藏控制通道（ttyS1）。M0 阶段只做两件事：
+#   1) 开机发一个 ready 信标 —— 验证「客户机 -> 宿主」这条链路
+#   2) 收宿主下发的命令 —— 验证反向链路，resize 将来也走这里
+#      （裸串口没有 TIOCSWINSZ，终端尺寸只能靠这条通道 + stty 传）
+if [ -c /dev/ttyS1 ]; then
+  stty -F /dev/ttyS1 raw -echo 2>/dev/null
+  echo "{\"ev\":\"ready\",\"host\":\"$HOST\",\"ip\":\"$IP\"}" > /dev/ttyS1
+  (
+    while read -r line < /dev/ttyS1; do
+      case "$line" in
+        resize\ *) set -- $line; stty -F /dev/ttyS0 rows "$2" cols "$3" 2>/dev/null ;;
+        ping\ *)   set -- $line
+                   if ping -c1 -W2 "$2" >/dev/null 2>&1; then R=ok; else R=fail; fi
+                   echo "{\"ev\":\"ping\",\"target\":\"$2\",\"result\":\"$R\"}" > /dev/ttyS1 ;;
+        status)    echo "{\"ev\":\"status\",\"host\":\"$HOST\",\"up\":1}" > /dev/ttyS1 ;;
+      esac
+    done
+  ) &
+fi
+
+echo
+echo "  === M0 guest: $HOST ==="
+ip -o -4 addr show 2>/dev/null | sed 's/^/  /'
+echo
+
+# getty 提供真正的控制终端（job control），并设好 TERM。
+# 用 while 循环 respawn：玩家在游戏里敲 exit 不能让虚拟机 panic。
+while true; do
+  getty -n -l /bin/sh 115200 ttyS0 xterm-256color
+  sleep 1
+done

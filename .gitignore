@@ -1,0 +1,28 @@
+# --- 大体积第三方源码与构建产物（绝不入库）---
+third_party/*.tar.*
+third_party/*.zip
+qemu/
+build/
+runtime/
+
+# --- M0 运行期产物 ---
+m0/images/*
+!m0/images/.gitkeep
+m0/run/*
+!m0/run/.gitkeep
+*.qcow2
+*.img
+*.pcap
+
+# --- .NET ---
+bin/
+obj/
+*.user
+
+# --- Godot ---
+.godot/
+.import/
+export_presets.cfg
+
+# --- 杂项 ---
+.DS_Store
