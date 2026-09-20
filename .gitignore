@@ -26,3 +26,7 @@ export_presets.cfg
 
 # --- 杂项 ---
 .DS_Store
+
+# Python
+__pycache__/
+*.pyc
