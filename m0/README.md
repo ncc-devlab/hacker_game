@@ -12,8 +12,9 @@ M0 的唯一目的：**在引入 Godot 之前，把所有不确定性打掉。**
 | M0-a | `scripts/10-crossover.sh` | 无（`-netdev stream` 直连，零自研代码） | ✅ PASS |
 | M0-b | `scripts/20-switched.sh` | 自研二层交换机 | ✅ PASS |
 | M0-c | `scripts/30-terminal.sh` | Alpine 完整 rootfs + vim/tmux 渲染验证 | ✅ PASS (11/11) |
-| M0-d | 待做 | Windows / macOS 上复现 a、b | ⬜ |
-| M0-e | 待做 | 裁剪构建 QEMU（`--target-list=x86_64-softmmu` 等） | ⬜ |
+| M0-d | 待做 | Windows / macOS 上复现 a、b、c | ⬜ |
+| M1 | `dotnet test` | Core 翻成 C#，三端 CI 可跑 | 🔨 进行中（14 项单测绿） |
+| M0-e | `scripts/40-build-qemu.sh` | 裁剪构建 QEMU | ✅ PASS |
 
 ## 跑起来
 
@@ -123,6 +124,38 @@ mac -> (端口, 最后出现时间)
 
 顺带一个白捡的能力：所有帧都过交换机，写 pcap 只要 24 字节全局头 + 每包 16 字节头，
 不需要任何库。调试期能用 Wireshark 看真实流量，后期它直接就是游戏里的抓包道具。
+
+## M0-e 的发现（裁剪构建）
+
+**收益不在二进制大小，在依赖闭包。** 实测对比：
+
+| | 发行版 QEMU | 裁剪版 |
+| --- | --- | --- |
+| 二进制（strip 后） | 28M | 27M |
+| **依赖的 .so** | **63 个 / 17M** | **8 个 / 3.6M** |
+| 发行目录合计 | — | **29M** |
+
+Steam 发行必须自带全部依赖（不能假设玩家机器上有 gnutls / fuse3 / libibverbs /
+capstone / libbpf），所以真正省下来的是**少打包 55 个共享库**，
+以及随之消失的杀软误报面——整个加密栈、fuse、rdma、bpf、jpeg 全都不在了。
+裁剪版实际只链 8 个：pixman、zlib、libfdt、glib、pcre2、libm、libc、ld。
+
+**三个踩过的坑：**
+
+1. **`--enable-zlib` 不存在。** QEMU 把 zlib 当硬依赖，由 pkg-config 找，不是可选特性。
+2. **不能加 `--disable-install-blobs`。** 即便用 `-kernel` 直接引导内核，
+   q35 仍然要 SeaBIOS 来完成装载，缺了会报
+   `could not load PC BIOS 'bios-256k.bin'`。
+3. **固件必须用白名单而不是黑名单。** `install` 会装上全部架构的固件，
+   光 edk2 的 arm/aarch64/riscv/loongarch UEFI 镜像就 **313MB**，
+   而我们只跑 x86_64、且完全不碰 UEFI。白名单只留三个文件：
+   `bios-256k.bin`、`kvmvapic.bin`、`linuxboot_dma.bin`。
+
+**`virtio-net-pci` 要带 `romfile=`。** 它默认加载 `efi-virtio.rom` 这个 PXE 引导 ROM，
+我们永远不网络引导，关掉能少发一个文件、少一段塞进客户机内存的代码。
+不关的话裁剪掉那个 rom 就会启动失败。
+
+裁剪版已回归 M0-b 与 M0-c，全绿。
 
 ## 不魔改 QEMU（项目硬约束）
 

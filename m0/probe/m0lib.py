@@ -102,7 +102,9 @@ class Vm:
             "-chardev", chardev("con", base + 1), "-serial", "chardev:con",
             "-chardev", chardev("ctl", base + 2), "-serial", "chardev:ctl",
             "-netdev", f"stream,id=n0,{netdev}",
-            "-device", f"virtio-net-pci,netdev=n0,mac=52:54:00:00:00:{idx:02x}",
+            # romfile= 关掉 PXE 引导 ROM：我们永远不网络引导，
+            # 留着就得多发一个 efi-virtio.rom，还白占客户机内存
+            "-device", f"virtio-net-pci,netdev=n0,romfile=,mac=52:54:00:00:00:{idx:02x}",
             "-qmp", f"tcp:{HOST}:{self.qmp_port},server=on,wait=off",
         ]
         if disk:

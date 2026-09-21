@@ -6,12 +6,21 @@
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
     <IsPackable>false</IsPackable>
+    <!-- Core 必须停在 net8.0（Godot 4 的 C# 运行时就是 .NET 8），
+         但开发机/CI 上未必装了 8 的运行时。测试工程向上滚动到已安装的主版本即可，
+         被测代码本身仍然是按 net8.0 编译的。 -->
+    <RollForward>LatestMajor</RollForward>
   </PropertyGroup>
 
   <ItemGroup>
     <PackageReference Include="Microsoft.NET.Test.Sdk" Version="17.11.1" />
     <PackageReference Include="xunit" Version="2.9.2" />
     <PackageReference Include="xunit.runner.visualstudio" Version="2.8.2" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- ImplicitUsings 不含 Xunit，集中在这里声明，省得每个测试文件重复 -->
+    <Using Include="Xunit" />
   </ItemGroup>
 
   <ItemGroup>

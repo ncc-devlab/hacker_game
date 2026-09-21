@@ -30,7 +30,7 @@ public class StreamFrameCodecTests
     }
 
     [Fact]
-    public void 缓冲区不足一整帧时返回 _null()
+    public void 缓冲区不足一整帧时返回null()
     {
         var buffer = new byte[] { 0, 0, 0, 10, 1, 2, 3 };   // 声称 10 字节，只给了 3
         Assert.Null(StreamFrameCodec.TryReadFrame(buffer, out int consumed));
@@ -38,7 +38,7 @@ public class StreamFrameCodecTests
     }
 
     [Fact]
-    public void 只有半个头部时返回 _null()
+    public void 只有半个头部时返回null()
     {
         Assert.Null(StreamFrameCodec.TryReadFrame(new byte[] { 0, 0 }, out int consumed));
         Assert.Equal(0, consumed);

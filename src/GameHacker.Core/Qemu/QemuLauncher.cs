@@ -82,7 +82,9 @@ public sealed class QemuLauncher : IAsyncDisposable
             "-chardev", chardev("ctl", controlPort), "-serial", "chardev:ctl",
             "-netdev", $"stream,id=n0,addr.type=inet,addr.host=127.0.0.1," +
                        $"addr.port={spec.SwitchPort},server=off,reconnect-ms=1000",
-            "-device", $"virtio-net-pci,netdev=n0,mac={spec.MacAddress}",
+            // romfile= 关掉 PXE 引导 ROM：我们永远不网络引导，
+            // 留着就得多发一个 efi-virtio.rom，还白占客户机内存
+            "-device", $"virtio-net-pci,netdev=n0,romfile=,mac={spec.MacAddress}",
             "-qmp", $"tcp:127.0.0.1:{qmpPort},server=on,wait=off",
         };
 
