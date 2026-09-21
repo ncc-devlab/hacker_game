@@ -1,0 +1,59 @@
+[gd_scene load_steps=2 format=3 uid="uid://bghm2main0"]
+
+[ext_resource type="Script" path="res://scripts/Main.cs" id="1_main"]
+
+[node name="Main" type="Control"]
+layout_mode = 3
+anchors_preset = 15
+anchor_right = 1.0
+anchor_bottom = 1.0
+grow_horizontal = 2
+grow_vertical = 2
+script = ExtResource("1_main")
+
+[node name="Layout" type="VBoxContainer" parent="."]
+layout_mode = 1
+anchors_preset = 15
+anchor_right = 1.0
+anchor_bottom = 1.0
+grow_horizontal = 2
+grow_vertical = 2
+offset_left = 8.0
+offset_top = 8.0
+offset_right = -8.0
+offset_bottom = -8.0
+
+[node name="Status" type="Label" parent="Layout"]
+unique_name_in_owner = true
+layout_mode = 2
+text = "初始化…"
+
+[node name="Split" type="HSplitContainer" parent="Layout"]
+layout_mode = 2
+size_flags_vertical = 3
+
+[node name="MainPane" type="VBoxContainer" parent="Layout/Split"]
+layout_mode = 2
+size_flags_horizontal = 3
+
+[node name="Title" type="Label" parent="Layout/Split/MainPane"]
+layout_mode = 2
+text = "主角机 — Alpine 10.0.0.1  (vim / tmux 可用)"
+
+[node name="MainTerminal" type="Terminal" parent="Layout/Split/MainPane"]
+unique_name_in_owner = true
+layout_mode = 2
+size_flags_vertical = 3
+
+[node name="TargetPane" type="VBoxContainer" parent="Layout/Split"]
+layout_mode = 2
+size_flags_horizontal = 3
+
+[node name="Title" type="Label" parent="Layout/Split/TargetPane"]
+layout_mode = 2
+text = "目标机 — 极小 Linux 10.0.0.2"
+
+[node name="TargetTerminal" type="Terminal" parent="Layout/Split/TargetPane"]
+unique_name_in_owner = true
+layout_mode = 2
+size_flags_vertical = 3

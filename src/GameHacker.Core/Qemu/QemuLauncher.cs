@@ -1,4 +1,6 @@
 using System.Diagnostics;
+using System.Linq;
+using System.Text;
 using GameHacker.Core.Channels;
 
 namespace GameHacker.Core.Qemu;
@@ -47,12 +49,38 @@ public sealed record VmSpec
 /// 加两个显式的 <c>-serial chardev:</c>，这样 ttyS0 是玩家终端、ttyS1 是控制通道。
 /// </para>
 /// </remarks>
-public sealed class QemuLauncher : IAsyncDisposable
+public sealed class QemuLauncher : IAsyncDisposable, IDisposable
 {
     private readonly string _qemuPath;
+    private readonly string _trackingDirectory;
+    private readonly StringBuilder _stderr = new();
     private Process? _process;
+    private string? _registration;
 
-    public QemuLauncher(string qemuPath = "qemu-system-x86_64") => _qemuPath = qemuPath;
+    public QemuLauncher(string qemuPath = "qemu-system-x86_64", string? trackingDirectory = null)
+    {
+        _qemuPath = qemuPath;
+        _trackingDirectory = trackingDirectory ?? VmProcessRegistry.DefaultDirectory;
+    }
+
+    /// <summary>
+    /// QEMU 写到 stderr 的内容。
+    /// </summary>
+    /// <remarks>
+    /// 必须留着：QEMU 起不来时只在 stderr 说一句话（比如
+    /// <c>failed to find romfile "efi-virtio.rom"</c>），
+    /// 丢掉它的话上层只能看到「等 ready 信标超时」，完全无从下手。
+    /// </remarks>
+    public string StandardError
+    {
+        get { lock (_stderr) return _stderr.ToString(); }
+    }
+
+    /// <summary>QEMU 进程是否已经退出（起不来时会立刻退）。</summary>
+    public bool HasExited => _process?.HasExited ?? false;
+
+    /// <summary>实际执行的命令行，排查时直接复制到终端里跑。</summary>
+    public string CommandLine { get; private set; } = "";
 
     public SerialChannel? Console { get; private set; }
     public SerialChannel? Control { get; private set; }
@@ -114,12 +142,58 @@ public sealed class QemuLauncher : IAsyncDisposable
             RedirectStandardError = true,
             UseShellExecute = false,
         };
-        foreach (var arg in BuildArguments(spec, Console.Port, Control.Port, QmpPort))
+        var args = BuildArguments(spec, Console.Port, Control.Port, QmpPort);
+        foreach (var arg in args)
             startInfo.ArgumentList.Add(arg);
+        CommandLine = _qemuPath + " " + string.Join(' ', args.Select(Quote));
 
         _process = Process.Start(startInfo)
                    ?? throw new InvalidOperationException($"无法启动 {_qemuPath}");
+
+        // 登记进程，这样即便宿主崩溃，下次启动也能回收掉它
+        _registration = VmProcessRegistry.Register(_process, _trackingDirectory);
+
+        _process.ErrorDataReceived += (_, e) =>
+        {
+            if (e.Data is null) return;
+            lock (_stderr) _stderr.AppendLine(e.Data);
+        };
+        _process.BeginErrorReadLine();
+        // stdout 也要读走，否则管道填满后 QEMU 会阻塞
+        _process.OutputDataReceived += (_, _) => { };
+        _process.BeginOutputReadLine();
     }
+
+    /// <summary>
+    /// 组装一条能解释「虚拟机没起来」的诊断信息。
+    /// </summary>
+    public string DescribeFailure()
+    {
+        string err = StandardError.Trim();
+        string state = HasExited
+            ? $"QEMU 已退出 (code {_process!.ExitCode})"
+            : "QEMU 仍在运行";
+
+        // 通道是否连上是关键判据：
+        //   都没连上 -> QEMU 根本没起来或参数不对
+        //   连上了但没 ready -> QEMU 正常，是客户机没启动完
+        // 收到的字节数是关键判据：
+        //   console 有字节 -> 客户机在启动，问题在 ttyS1 或判定逻辑
+        //   console 也没字节 -> 客户机根本没跑起来
+        string channels =
+            $"console={(Console?.IsConnected == true ? "已连" : "未连")}/{Console?.BytesReceived ?? 0}B "
+            + $"control={(Control?.IsConnected == true ? "已连" : "未连")}/{Control?.BytesReceived ?? 0}B";
+
+        return $"{state}，{channels}"
+               + (err.Length > 0 ? $"，stderr: {err}" : "，stderr 为空")
+               + $"\n       命令行: {CommandLine}";
+    }
+
+    /// <summary>给命令行参数加引号，方便直接复制去 shell 里复现。</summary>
+    private static string Quote(string arg) =>
+        arg.Length > 0 && arg.All(c => char.IsLetterOrDigit(c) || "-_./=:,".Contains(c))
+            ? arg
+            : "'" + arg.Replace("'", "'\\''") + "'";
 
     private static int FreeTcpPort()
     {
@@ -132,13 +206,48 @@ public sealed class QemuLauncher : IAsyncDisposable
 
     public async ValueTask DisposeAsync()
     {
-        if (_process is { HasExited: false })
-        {
-            _process.Kill(entireProcessTree: true);
-            await _process.WaitForExitAsync();
-        }
-        _process?.Dispose();
+        KillProcess();
+        if (_process is not null) await _process.WaitForExitAsync();
+        Cleanup();
         if (Console is not null) await Console.DisposeAsync();
         if (Control is not null) await Control.DisposeAsync();
+    }
+
+    /// <summary>
+    /// 同步清理。
+    /// </summary>
+    /// <remarks>
+    /// Godot 的 <c>_ExitTree</c> 不会 await <c>async void</c>，
+    /// 用 <see cref="DisposeAsync"/> 的话宿主进程会在杀完子进程之前就退出，
+    /// 留下一堆吃满 CPU 的孤儿 QEMU。引擎关闭路径上必须用这个同步版本。
+    /// </remarks>
+    public void Dispose()
+    {
+        KillProcess();
+        _process?.WaitForExit(5000);
+        Cleanup();
+        Console?.DisposeAsync().AsTask().Wait(2000);
+        Control?.DisposeAsync().AsTask().Wait(2000);
+    }
+
+    private void KillProcess()
+    {
+        try
+        {
+            if (_process is { HasExited: false })
+                _process.Kill(entireProcessTree: true);
+        }
+        catch (Exception ex) when (ex is InvalidOperationException or NotSupportedException)
+        {
+            // 进程已经没了
+        }
+    }
+
+    private void Cleanup()
+    {
+        VmProcessRegistry.Unregister(_registration);
+        _registration = null;
+        _process?.Dispose();
+        _process = null;
     }
 }

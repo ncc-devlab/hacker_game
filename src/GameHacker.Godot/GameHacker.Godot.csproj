@@ -1,0 +1,17 @@
+<Project Sdk="Godot.NET.Sdk/4.7.2">
+
+  <PropertyGroup>
+    <TargetFramework>net8.0</TargetFramework>
+    <EnableDynamicLoading>true</EnableDynamicLoading>
+    <Nullable>enable</Nullable>
+    <LangVersion>latest</LangVersion>
+    <RootNamespace>GameHacker.Godot</RootNamespace>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <!-- 薄壳引用 Core，而不是反过来。Core 里不能出现任何 Godot 类型，
+         否则三端 CI 上的 dotnet test 就跑不起来了。 -->
+    <ProjectReference Include="../GameHacker.Core/GameHacker.Core.csproj" />
+  </ItemGroup>
+
+</Project>

@@ -29,6 +29,7 @@ public sealed class SerialChannel : IAsyncDisposable
     private readonly CancellationTokenSource _cts = new();
     private readonly SemaphoreSlim _writeLock = new(1, 1);
     private NetworkStream? _stream;
+    private long _bytesReceived;
 
     public SerialChannel(int port = 0)
     {
@@ -41,6 +42,9 @@ public sealed class SerialChannel : IAsyncDisposable
     public int Port { get; }
 
     public bool IsConnected => _stream is not null;
+
+    /// <summary>累计收到的字节数。排查「通道连上了但没数据」时的关键判据。</summary>
+    public long BytesReceived => Interlocked.Read(ref _bytesReceived);
 
     /// <summary>收到客户机送来的裸字节。<b>在后台线程上触发。</b></summary>
     public event Action<ReadOnlyMemory<byte>>? DataReceived;
@@ -72,6 +76,7 @@ public sealed class SerialChannel : IAsyncDisposable
                     {
                         int read = await _stream.ReadAsync(buffer, linked.Token);
                         if (read == 0) break;
+                        Interlocked.Add(ref _bytesReceived, read);
                         DataReceived?.Invoke(buffer.AsMemory(0, read).ToArray());
                     }
                 }

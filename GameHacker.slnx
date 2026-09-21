@@ -2,5 +2,8 @@
   <Folder Name="/src/">
     <Project Path="src/GameHacker.Core.Tests/GameHacker.Core.Tests.csproj" />
     <Project Path="src/GameHacker.Core/GameHacker.Core.csproj" />
+    <Project Path="src/GameHacker.Godot/GameHacker.Godot.csproj">
+      <BuildType Project="Debug" />
+    </Project>
   </Folder>
 </Solution>

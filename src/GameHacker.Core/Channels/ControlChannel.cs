@@ -36,15 +36,39 @@ public sealed class ControlChannel : IAsyncDisposable
 {
     private static readonly TimeSpan ResendInterval = TimeSpan.FromSeconds(2);
 
+    /// <summary>补发窗口与排查缓冲的上限。</summary>
+    private const int HistoryLimit = 64;
+
     private readonly SerialChannel _serial;
-    private readonly Channel<JsonObject> _events =
-        Channel.CreateUnbounded<JsonObject>(new UnboundedChannelOptions { SingleReader = false });
     private readonly StringBuilder _lineBuffer = new();
+
+    // 事件按订阅广播，每个等待者一个独立队列。
+    //
+    // 这里不能用一个共享队列让大家去抢：那是破坏性单消费者语义，
+    // 任意两个并发的等待者会互相吞掉对方的事件。M2 里实测到过 ——
+    // 终端布局触发的 resize 等待者先起来，从共享队列里读到 ready，
+    // 发现不是自己要的就丢掉，于是 WaitReadyAsync 永远等不到。
+    private readonly List<Channel<JsonObject>> _subscribers = [];
+
+    // 已经发生过的事件。新订阅者会先收到这些。
+    //
+    // 必须有：ready 信标只发一次，如果它先于任何等待者到达，
+    // 纯广播模型会直接把它丢掉。
+    private readonly Queue<JsonObject> _history = new();
+
+    // 排查用：这条通道上出现过的原始文本行，包括解析不了的。
+    private readonly List<string> _seenLines = [];
 
     public ControlChannel(SerialChannel serial)
     {
         _serial = serial;
         _serial.DataReceived += OnData;
+    }
+
+    /// <summary>这条通道上出现过的原始文本行，排查用。</summary>
+    public IReadOnlyList<string> SeenLines
+    {
+        get { lock (_seenLines) return _seenLines.ToArray(); }
     }
 
     private void OnData(ReadOnlyMemory<byte> data)
@@ -62,32 +86,84 @@ public sealed class ControlChannel : IAsyncDisposable
             _lineBuffer.Append(text[(newline + 1)..]);
 
             if (line.Length == 0) continue;
-            // 串口上混着开机噪声，解析不出 JSON 的行直接忽略
+
+            lock (_seenLines)
+            {
+                if (_seenLines.Count < HistoryLimit) _seenLines.Add(line);
+            }
+
+            // 串口上混着开机噪声和命令回显，解析不出 JSON 的行直接忽略
             try
             {
-                if (JsonNode.Parse(line) is JsonObject ev)
-                    _events.Writer.TryWrite(ev);
+                if (JsonNode.Parse(line) is JsonObject ev) Publish(ev);
             }
             catch (JsonException) { }
         }
+    }
+
+    private void Publish(JsonObject ev)
+    {
+        lock (_subscribers)
+        {
+            _history.Enqueue(ev);
+            while (_history.Count > HistoryLimit) _history.Dequeue();
+
+            foreach (var subscriber in _subscribers)
+                subscriber.Writer.TryWrite(ev);
+        }
+    }
+
+    private Channel<JsonObject> Subscribe()
+    {
+        var inbox = Channel.CreateUnbounded<JsonObject>(
+            new UnboundedChannelOptions { SingleReader = true, SingleWriter = false });
+
+        lock (_subscribers)
+        {
+            // 先补发历史，再挂进订阅列表 —— 两步都在锁里，
+            // 保证既不漏事件也不会重复收到同一条。
+            foreach (var ev in _history) inbox.Writer.TryWrite(ev);
+            _subscribers.Add(inbox);
+        }
+        return inbox;
+    }
+
+    private void Unsubscribe(Channel<JsonObject> inbox)
+    {
+        lock (_subscribers) _subscribers.Remove(inbox);
+        inbox.Writer.TryComplete();
     }
 
     /// <summary>等客户机 init 发出 ready 信标。发任何命令之前必须先等到它。</summary>
     public Task<JsonObject> WaitReadyAsync(TimeSpan timeout, CancellationToken cancellationToken = default) =>
         WaitEventAsync("ready", timeout, cancellationToken);
 
-    /// <summary>等一条指定类型的事件。</summary>
+    /// <summary>等一条指定类型的事件。订阅之前已经发生过的也算。</summary>
     public async Task<JsonObject> WaitEventAsync(
         string eventName, TimeSpan timeout, CancellationToken cancellationToken = default)
     {
         using var cts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
         cts.CancelAfter(timeout);
 
-        await foreach (var ev in _events.Reader.ReadAllAsync(cts.Token))
-            if (ev["ev"]?.GetValue<string>() == eventName)
-                return ev;
+        var inbox = Subscribe();
+        try
+        {
+            await foreach (var ev in inbox.Reader.ReadAllAsync(cts.Token))
+                if (ev["ev"]?.GetValue<string>() == eventName)
+                    return ev;
 
-        throw new TimeoutException($"等待事件 {eventName} 超时");
+            throw new TimeoutException($"等待事件 {eventName} 时通道已关闭");
+        }
+        catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
+        {
+            // 是我们自己的超时，不是调用方取消。换成 TimeoutException，
+            // 否则上层只看到一句 "The operation was canceled"，分不清是哪种。
+            throw new TimeoutException($"等待事件 {eventName} 超时（{timeout.TotalSeconds:0}s）");
+        }
+        finally
+        {
+            Unsubscribe(inbox);
+        }
     }
 
     /// <summary>
@@ -127,7 +203,11 @@ public sealed class ControlChannel : IAsyncDisposable
     public ValueTask DisposeAsync()
     {
         _serial.DataReceived -= OnData;
-        _events.Writer.TryComplete();
+        lock (_subscribers)
+        {
+            foreach (var subscriber in _subscribers) subscriber.Writer.TryComplete();
+            _subscribers.Clear();
+        }
         return ValueTask.CompletedTask;
     }
 }

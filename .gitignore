@@ -30,3 +30,8 @@ export_presets.cfg
 # Python
 __pycache__/
 *.pyc
+
+# Godot 外壳
+src/GameHacker.Godot/addons/
+src/GameHacker.Godot/.addons-cache/
+src/GameHacker.Godot/.godot/
