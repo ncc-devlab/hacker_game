@@ -123,18 +123,30 @@ mac -> (端口, 最后出现时间)
 
 ## M0-e 的发现（裁剪构建）
 
-**收益不在二进制大小，在依赖闭包。** 实测对比：
+**先说对照口径。** 拿发行版 QEMU 当基准是错的——那份我们**永远发不了**：
+Windows 上 MSYS2 的构建绑死在 MSYS 路径且自带 GPL 依赖，
+macOS 上 homebrew 的构建链接 `/opt/homebrew` 不可重定位、还得自己签名公证
+并加 JIT entitlement。**三端都必须自建**，所以真正该比的是
+「自建裁剪」对「自建不裁剪」。
 
-| | 发行版 QEMU | 裁剪版 |
+拆开看，两部分收益的性质完全不同：
+
+| 动作 | 效果 | 是否与构建机有关 |
 | --- | --- | --- |
-| 二进制（strip 后） | 28M | 27M |
-| **依赖的 .so** | **63 个 / 17M** | **8 个 / 3.6M** |
-| 发行目录合计 | — | **29M** |
+| **裁剪 + strip 安装产物** | 342M → **29M** | 无关，纯后处理 |
+| **`--without-default-features`** | 二进制 27M vs 28M，几乎不变 | **强相关，这才是重点** |
 
-Steam 发行必须自带全部依赖（不能假设玩家机器上有 gnutls / fuse3 / libibverbs /
-capstone / libbpf），所以真正省下来的是**少打包 55 个共享库**，
-以及随之消失的杀软误报面——整个加密栈、fuse、rdma、bpf、jpeg 全都不在了。
-裁剪版实际只链 8 个：pixman、zlib、libfdt、glib、pcre2、libm、libc、ld。
+体积那部分几乎全来自后处理（固件白名单 + strip + 删掉用不到的二进制），
+跟 configure 开关没什么关系。
+
+**`--without-default-features` 真正买到的是确定性。** 不加它的话，
+链进去什么完全取决于构建机上恰好装了哪些 dev 包。在这台精简机器上
+试算只多出 capstone / libudev / libusb 三个；而 Arch 自己的包证明
+在一台"胖"镜像上同样的 configure 会得到 **63 个 .so**。
+三端各自的 CI 镜像不可能一致，**构建不可复现**比多 13MB 严重得多。
+
+裁剪版稳定只链 8 个：pixman、zlib、libfdt、glib、pcre2、libm、libc、ld。
+杀软误报面也随之消失——整个加密栈、fuse、rdma、bpf、jpeg 都不在了。
 
 **三个踩过的坑：**
 
@@ -149,7 +161,17 @@ capstone / libbpf），所以真正省下来的是**少打包 55 个共享库**�
 
 **`virtio-net-pci` 要带 `romfile=`。** 它默认加载 `efi-virtio.rom` 这个 PXE 引导 ROM，
 我们永远不网络引导，关掉能少发一个文件、少一段塞进客户机内存的代码。
-不关的话裁剪掉那个 rom 就会启动失败。
+不关的话裁剪掉那个 rom 就会启动失败。（同理，不显式指定网卡时 q35 会造一个
+默认 e1000e 并去找 `efi-e1000e.rom`，所以裸跑 QEMU 调试时记得带 `-nic none`。）
+
+**白名单是会踩人的，所以它必须跟回归套件绑在一起。** 我就踩了一次：
+概要书里开局那台机器是 **FreeDOS，它需要 VGA 文本模式而不是串口**，
+而白名单最初没有 `vgabios-stdvga.bin`，`-vga std` 直接起不来。已补上（4KB）。
+
+**好消息是 FreeDOS 那条线不需要把图形后端加回来。** 实测裁剪版
+（无 VNC / 无 SDL / 无 GTK）配 `-vga std` + QMP `screendump`
+能拿到 720×400 的 PPM，而 PPM（P6）是裸 RGB，Godot 解起来很容易。
+也就是说客户机画面进 Godot 这条路，靠 QMP 就够了。
 
 裁剪版已回归 M0-b 与 M0-c，全绿。
 
