@@ -76,7 +76,7 @@ class Vm:
 
     IMAGES = os.path.join(os.path.dirname(__file__), "..", "images")
 
-    def __init__(self, idx, name, ip, netdev, runlog):
+    def __init__(self, idx, name, ip, netdev, runlog, disk=None, mem=256):
         self.idx, self.name, self.ip = idx, name, ip
         base = 17000 + idx * 100
         self.con = Listener(base + 1, f"{name}:con")   # ttyS0 玩家终端
@@ -86,19 +86,27 @@ class Vm:
         img = lambda f: os.path.abspath(os.path.join(self.IMAGES, f))
         chardev = lambda i, p: f"socket,id={i},host={HOST},port={p},server=off,reconnect-ms=1000"
 
+        # 带 disk 时 initramfs 会 switch_root 进去（主角机 = 完整 Alpine），
+        # 不带则就地当纯内存的极小目标机跑。
+        # mke2fs 造的是整盘文件系统、没有分区表，所以根设备是 /dev/vda 而不是 vda1。
+        root_arg = " m0.root=/dev/vda" if disk else ""
+
         self.args = [
             QEMU,
-            "-machine", "q35,accel=tcg", "-m", "256", "-smp", "1",
+            "-machine", "q35,accel=tcg", "-m", str(mem), "-smp", "1",
             "-display", "none", "-vga", "none", "-monitor", "none",
             "-kernel", img("vmlinuz-virt"), "-initrd", img("m0-guest.cpio.gz"),
             # quiet/loglevel 让玩家看到的是干净终端，不是内核刷屏
-            "-append", f"console=ttyS0 quiet loglevel=3 tsc=unstable m0.host={name} m0.ip={ip}",
+            "-append", f"console=ttyS0 quiet loglevel=3 tsc=unstable "
+                       f"m0.host={name} m0.ip={ip}{root_arg}",
             "-chardev", chardev("con", base + 1), "-serial", "chardev:con",
             "-chardev", chardev("ctl", base + 2), "-serial", "chardev:ctl",
             "-netdev", f"stream,id=n0,{netdev}",
             "-device", f"virtio-net-pci,netdev=n0,mac=52:54:00:00:00:{idx:02x}",
             "-qmp", f"tcp:{HOST}:{self.qmp_port},server=on,wait=off",
         ]
+        if disk:
+            self.args += ["-drive", f"file={img(disk)},if=virtio,format=qcow2,snapshot=on"]
         self._log = open(runlog, "wb")
         self.proc = subprocess.Popen(self.args, stdout=self._log, stderr=self._log)
 

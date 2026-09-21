@@ -11,19 +11,25 @@ M0 的唯一目的：**在引入 Godot 之前，把所有不确定性打掉。**
 | --- | --- | --- | --- |
 | M0-a | `scripts/10-crossover.sh` | 无（`-netdev stream` 直连，零自研代码） | ✅ PASS |
 | M0-b | `scripts/20-switched.sh` | 自研二层交换机 | ✅ PASS |
-| M0-c | 待做 | Alpine 完整 rootfs + vim/tmux 渲染验证 | ⬜ |
+| M0-c | `scripts/30-terminal.sh` | Alpine 完整 rootfs + vim/tmux 渲染验证 | ✅ PASS (11/11) |
 | M0-d | 待做 | Windows / macOS 上复现 a、b | ⬜ |
 | M0-e | 待做 | 裁剪构建 QEMU（`--target-list=x86_64-softmmu` 等） | ⬜ |
 
 ## 跑起来
 
 ```bash
-bash m0/scripts/00-fetch-images.sh        # 取 Alpine netboot 内核 + initramfs
-bash m0/scripts/01-build-guest-initramfs.sh
-bash m0/scripts/10-crossover.sh           # M0-a
-bash m0/scripts/20-switched.sh -v         # M0-b，-v 打印每一帧的转发决策
-wireshark m0/run/m0.pcap                  # 交换机抓下来的真实流量
+bash m0/scripts/00-fetch-images.sh          # 取 Alpine netboot 内核 + initramfs
+bash m0/scripts/02-build-alpine-rootfs.sh   # 造主角机 qcow2（vim/tmux）
+bash m0/scripts/01-build-guest-initramfs.sh # 烤目标机 initramfs（含 ext4）
+bash m0/scripts/10-crossover.sh             # M0-a 交叉直连
+bash m0/scripts/20-switched.sh -v           # M0-b 自研交换机，-v 打印每帧转发决策
+bash m0/scripts/30-terminal.sh              # M0-c 终端渲染验收
+bash m0/scripts/40-build-qemu.sh            # M0-e 裁剪构建 QEMU
+wireshark m0/run/m0.pcap                    # 交换机抓下来的真实流量
 ```
+
+02 要在 01 之前跑：01 需要从 apk 取 ext4 模块，而那套 apk 调用在 `lib.sh` 里，
+两者共用同一份 minirootfs 缓存。
 
 ## 已确认的事实（都是实测/源码核实，不是推测）
 
@@ -56,6 +62,38 @@ Unix socket，这是唯一三端可移植的选择。`-netdev stream` 的 `addr.
 而 `getty -n -l /bin/sh 115200 ttyS0 xterm-256color` 能给出真正的控制终端
 （job control）并设好 `TERM`——这是后面 tmux/vim 正常工作的前提。
 外面套 `while true` 循环 respawn：玩家在游戏里敲 `exit` 不能让虚拟机 panic。
+
+## M0-c 的发现（终端渲染）
+
+验证方式不是肉眼看，而是在宿主上跑真正的 xterm 兼容模拟器（pyte）渲染
+ttyS0 的原始字节流，再对渲染结果做断言（`probe/term.py`）。
+这把两个风险解耦了：**字节流对不对**是我们的责任，**godot-xterm 渲染对不对**
+是它的责任。本层绿了之后，godot-xterm 里的任何不一致都能直接定位到它身上。
+
+**三条必须交给 godot-xterm 验证的序列**（都是实测踩出来的）：
+
+1. **`CSI 6 n`（DSR，光标位置查询）必须应答。** 客户机的 busybox ash 提示符
+   每次都会发它，期待终端回 `CSI row;col R`。不应答 shell 和全屏程序会错乱。
+2. **`CSI > 4 ; 2 m`（XTMODKEYS / modifyOtherKeys）不能崩。** vim 一进来就发。
+   pyte 0.8.2 在这条上直接抛 TypeError，我们打了补丁绕过（见 `term.py`）。
+   godot-xterm 很可能有同类问题。
+3. **DEC 特殊图形字符集（`ESC ( 0`）必须实现。** tmux 的 pane 分隔线用它画，
+   `q` 在该字符集下是横线。不实现的话 tmux 的框线会渲染成一整行字母 q
+   —— 我们的 pyte 视图里现在就是这样，那是 pyte 的局限，不是字节流的问题。
+
+**客户机必须挂 devpts，否则 tmux 起不来。** devtmpfs 不会自动建 `/dev/pts` 目录，
+不先 `mkdir` 的话 `mount -t devpts` 会失败，症状是 tmux 报
+`create window failed: fork failed: No such file or directory`。
+`guest/common.sh` 的 `m0_mount_pty()` 负责这件事，两种客户机都调用。
+
+**主角机镜像全程不用 root 构建**：apk 通过 musl loader 直接在宿主上跑
+（`--root` 指向目标目录），`mke2fs -d` 直接从目录生成 ext4 不用 mount，
+`fakeroot` 保证文件属主落成 0:0。产物 21MB qcow2，含 Alpine 3.23.6 + vim 9.2 + tmux 3.6，
+**2.8 秒启动**（TCG，无硬件加速）。
+
+**测试哨兵必须每条命令唯一。** 用固定字样会出一个隐蔽的竞态：哨兵一旦出现就
+永久留在流水里，下一次等待立刻命中、根本没等新输出，取回的还是上一条命令的区间。
+这个 bug 表现为结果在多次运行之间飘忽不定。
 
 ## 交换机：为什么自己写
 

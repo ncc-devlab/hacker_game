@@ -1,0 +1,26 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!--
+    刻意不依赖 Godot。
+
+    概要书要求三端稳定重现，那就必须能在 CI 上自动验证，而不是手工开三台机器点。
+    Core 保持纯 .NET，CI 上一句 dotnet test 就能在 Windows/macOS/Linux 跑完
+    「起两台 VM -> 过交换机 -> ping 通 -> 判定触发」的全链路，不需要 Godot、
+    不需要图形环境。Godot 项目只是引用它的一层薄壳。
+  -->
+
+  <PropertyGroup>
+    <TargetFramework>net8.0</TargetFramework>
+    <LangVersion>latest</LangVersion>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <!-- 协议解析不自己写。MPL-2.0 是文件级 copyleft：只要不改它自己的源文件，
+         就能链进闭源商业游戏发行，没有传染。见 m0/README.md 的取舍说明。 -->
+    <PackageReference Include="PacketDotNet" Version="1.4.7" />
+  </ItemGroup>
+
+</Project>
