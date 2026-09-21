@@ -1,7 +1,10 @@
-; Godot 工程配置。
-; 这一层刻意保持"薄壳"：编排、网络、判定全在 GameHacker.Core 里，
-; 那是纯 .NET、零 Godot 依赖的，三端 CI 能直接 dotnet test。
-; 理由见 docs/M1-Core.md。
+; Engine configuration file.
+; It's best edited using the editor UI and not directly,
+; since the parameters that go here are not all obvious.
+;
+; Format:
+;   [section] ; section goes between []
+;   param=value ; assign values to parameters
 
 config_version=5
 
@@ -12,14 +15,14 @@ config/description="黑客教学游戏 — 技术脊椎验证壳"
 run/main_scene="res://scenes/Main.tscn"
 config/features=PackedStringArray("4.7", "C#", "Forward Plus")
 
-[dotnet]
-
-project/assembly_name="GameHacker.Godot"
-
 [display]
 
 window/size/viewport_width=1600
 window/size/viewport_height=900
+
+[dotnet]
+
+project/assembly_name="GameHacker.Godot"
 
 [editor_plugins]
 

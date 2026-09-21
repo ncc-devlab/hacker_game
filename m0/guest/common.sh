@@ -54,6 +54,135 @@ m0_mount_pty() {
     SHELL=/bin/sh; export SHELL
 }
 
+# ---------------------------------------------------------------------------
+# 伪装。默认配置下客户机到处写着「我是虚拟机」，玩家随手 uname -r 就穿帮。
+#
+# 分工：主板 / BIOS / CPU 型号在宿主侧用 QEMU 的 -smbios / -cpu 做掉
+#       （见 GameHacker.Core 的 HardwarePersona），这里只管内核和发行版那一层。
+#
+# 手段是 bind-mount 覆盖 /proc 下的单个文件 —— procfs 支持这么干，
+# 实测 /proc/version 和 /proc/cmdline 都能盖住，umount 之后原样恢复。
+#
+# ⚠ 必须在所有 m0_cmdline_get 调用之后再跑：盖掉 /proc/cmdline 以后就读不到了。
+# ---------------------------------------------------------------------------
+
+# cmdline 按空格分词，值里不能带空格，宿主侧把空格换成了 ~，这里还原。
+m0_unesc() { printf '%s' "$1" | tr '~' ' '; }
+
+m0_disguise() {
+    # 真实值先留一份 —— 下面要用它在 /proc/version 里做替换，
+    # 而且 m0_install_uname 之后就问不到了。
+    M0_REAL_R="$(uname -r)"
+
+    M0_UTS_R="$(m0_unesc "$(m0_cmdline_get m0.uts_r)")"
+    M0_FLAVOR="$(m0_cmdline_get m0.uts_flavor)"
+    # 不写死版本号，只把 Alpine 的 -virt 后缀换成 -lts：
+    # 写死的话每次升级客户机内核都要跟着改，迟早对不上。
+    if [ -z "$M0_UTS_R" ] && [ -n "$M0_FLAVOR" ]; then
+        M0_UTS_R="$(printf '%s' "$M0_REAL_R" | sed "s/-virt\$/-$M0_FLAVOR/")"
+    fi
+    [ -n "$M0_UTS_R" ] || return 0            # 没给人设 = 不伪装
+
+    M0_UTS_V="$(m0_unesc "$(m0_cmdline_get m0.uts_v)")"
+    [ -n "$M0_UTS_V" ] || M0_UTS_V="$(uname -v)"
+    M0_FAKECMD="$(m0_unesc "$(m0_cmdline_get m0.cmdline)")"
+    M0_OS_NAME="$(m0_unesc "$(m0_cmdline_get m0.os_name)")"
+    M0_OS_ID="$(m0_cmdline_get m0.os_id)"
+    M0_OS_VER="$(m0_cmdline_get m0.os_ver)"
+
+    mkdir -p /run/m0
+    cat > /run/m0/persona <<PERSONA
+M0_UTS_R="$M0_UTS_R"
+M0_UTS_V="$M0_UTS_V"
+PERSONA
+
+    # 1. /proc/version —— uname 的壳子挡不住 cat 这个文件。
+    #    在真的那行上做替换，而不是自己拼一行：编译器版本、构建者这些
+    #    保持原样才不会和别处对不上。
+    sed "s|$M0_REAL_R|$M0_UTS_R|g" /proc/version > /run/m0/version 2>/dev/null
+    [ -s /run/m0/version ] || printf 'Linux version %s\n' "$M0_UTS_R" > /run/m0/version
+    mount --bind /run/m0/version /proc/version 2>/dev/null
+
+    # 2. /proc/cmdline —— 真机上没人会看见 console=ttyS0 和一堆 m0.*
+    if [ -n "$M0_FAKECMD" ]; then
+        printf '%s\n' "$M0_FAKECMD" > /run/m0/cmdline
+        mount --bind /run/m0/cmdline /proc/cmdline 2>/dev/null
+    fi
+
+    # 3. uname 本体。utsname 是内核编译期定死的、用户态改不了，
+    #    所以把 /bin/uname 从 busybox 的软链换成我们自己的壳子。
+    #    绕得过去的只有 `busybox uname` 这种直呼 applet 的写法 ——
+    #    要根治得换自建内核，见 docs/伪装.md。
+    m0_install_uname
+
+    # 4. 内核环形缓冲区。console 上已经用 quiet/loglevel 压掉了，
+    #    但 dmesg 读的是缓冲区本身，里面还留着 DMI、SeaBIOS、内核版本。
+    #    busybox 的 dmesg 没有 -C，用 -c（打印后清空）把输出丢掉即可。
+    dmesg -c >/dev/null 2>&1
+
+    # 5. 发行版标识。默认不动 —— 这套客户机是货真价实的 Alpine + busybox，
+    #    硬说自己是 Ubuntu 反而处处对不上（没有 dpkg、/etc/apk 还在）。
+    #    要做架空发行版时再从宿主侧传这几个值。
+    if [ -n "$M0_OS_NAME" ]; then
+        cat > /etc/os-release <<OSREL
+NAME="${M0_OS_NAME%% [0-9]*}"
+VERSION="$M0_OS_VER"
+ID=$M0_OS_ID
+VERSION_ID="$M0_OS_VER"
+PRETTY_NAME="$M0_OS_NAME"
+OSREL
+        printf '%s \\n \\l\n\n' "$M0_OS_NAME" > /etc/issue 2>/dev/null
+        : > /etc/motd 2>/dev/null
+        rm -f /etc/alpine-release 2>/dev/null
+    fi
+
+    # 6. 藏掉我们自己的启动脚本。/lib/m0 里的东西已经 source 进内存了，
+    #    盖一层空 tmpfs 不影响本次运行；重启时挂载没了，init 照样读得到。
+    if [ -d /lib/m0 ]; then
+        mkdir -p /run/m0/empty
+        mount --bind /run/m0/empty /lib/m0 2>/dev/null
+    fi
+}
+
+m0_install_uname() {
+    for d in /bin /usr/bin; do
+        [ -e "$d/uname" ] || continue
+        rm -f "$d/uname"
+        cat > "$d/uname" <<'UNAME'
+#!/bin/sh
+. /run/m0/persona 2>/dev/null
+s=Linux; m=x86_64; p=unknown; i=unknown; o="GNU/Linux"
+n=$(cat /proc/sys/kernel/hostname 2>/dev/null)
+[ $# -eq 0 ] && { echo "$s"; exit 0; }
+out=
+for a in "$@"; do
+    case "$a" in
+        -a|--all)     echo "$s $n $M0_UTS_R $M0_UTS_V $m $o"; exit 0 ;;
+        --kernel-name)    out="$out $s" ;;
+        --nodename)       out="$out $n" ;;
+        --kernel-release) out="$out $M0_UTS_R" ;;
+        --kernel-version) out="$out $M0_UTS_V" ;;
+        --machine)        out="$out $m" ;;
+        --operating-system) out="$out $o" ;;
+        --help|--version) echo "Usage: uname [-asnrvmpio]"; exit 0 ;;
+        -*) f=${a#-}
+            while [ -n "$f" ]; do
+                c=${f%"${f#?}"}; f=${f#?}
+                case $c in
+                    s) out="$out $s" ;; n) out="$out $n" ;;
+                    r) out="$out $M0_UTS_R" ;; v) out="$out $M0_UTS_V" ;;
+                    m) out="$out $m" ;; p) out="$out $p" ;;
+                    i) out="$out $i" ;; o) out="$out $o" ;;
+                esac
+            done ;;
+    esac
+done
+echo "${out# }"
+UNAME
+        chmod 0755 "$d/uname"
+    done
+}
+
 m0_banner() {
     echo
     echo "  === M0 guest: $M0_HOST ==="

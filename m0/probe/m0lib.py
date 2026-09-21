@@ -76,7 +76,11 @@ class Vm:
 
     IMAGES = os.path.join(os.path.dirname(__file__), "..", "images")
 
-    def __init__(self, idx, name, ip, netdev, runlog, disk=None, mem=256):
+    def __init__(self, idx, name, ip, netdev, runlog, disk=None, mem=256,
+                 extra_args=(), extra_append="", nic="e1000e", bus="ahci"):
+        # extra_args / extra_append 给伪装（-smbios / -cpu / m0.uts_*）留的口子。
+        # 这份是探针用的平行实现，真正发给玩家的命令行在
+        # GameHacker.Core 的 QemuLauncher 里，两边要一起改。
         self.idx, self.name, self.ip = idx, name, ip
         base = 17000 + idx * 100
         self.con = Listener(base + 1, f"{name}:con")   # ttyS0 玩家终端
@@ -89,7 +93,7 @@ class Vm:
         # 带 disk 时 initramfs 会 switch_root 进去（主角机 = 完整 Alpine），
         # 不带则就地当纯内存的极小目标机跑。
         # mke2fs 造的是整盘文件系统、没有分区表，所以根设备是 /dev/vda 而不是 vda1。
-        root_arg = " m0.root=/dev/vda" if disk else ""
+        root_arg = (" m0.root=/dev/vda" if bus == "virtio" else " m0.root=/dev/sda") if disk else ""
 
         self.args = [
             QEMU,
@@ -98,17 +102,23 @@ class Vm:
             "-kernel", img("vmlinuz-virt"), "-initrd", img("m0-guest.cpio.gz"),
             # quiet/loglevel 让玩家看到的是干净终端，不是内核刷屏
             "-append", f"console=ttyS0 quiet loglevel=3 tsc=unstable "
-                       f"m0.host={name} m0.ip={ip}{root_arg}",
+                       f"m0.host={name} m0.ip={ip}{root_arg}{extra_append}",
             "-chardev", chardev("con", base + 1), "-serial", "chardev:con",
             "-chardev", chardev("ctl", base + 2), "-serial", "chardev:ctl",
             "-netdev", f"stream,id=n0,{netdev}",
             # romfile= 关掉 PXE 引导 ROM：我们永远不网络引导，
             # 留着就得多发一个 efi-virtio.rom，还白占客户机内存
-            "-device", f"virtio-net-pci,netdev=n0,romfile=,mac=52:54:00:00:00:{idx:02x}",
+            "-device", f"{nic},netdev=n0,romfile=,mac=52:54:00:00:00:{idx:02x}",
             "-qmp", f"tcp:{HOST}:{self.qmp_port},server=on,wait=off",
         ]
+        self.args += list(extra_args)
         if disk:
-            self.args += ["-drive", f"file={img(disk)},if=virtio,format=qcow2,snapshot=on"]
+            if bus == "virtio":
+                self.args += ["-drive", f"file={img(disk)},if=virtio,format=qcow2,snapshot=on"]
+            else:
+                # q35 的 if=ide 不会接到 ich9-ahci 上，必须显式挂 ide-hd 到 ide.0
+                self.args += ["-drive", f"file={img(disk)},if=none,id=d0,format=qcow2,snapshot=on",
+                              "-device", "ide-hd,drive=d0,bus=ide.0"]
         self._log = open(runlog, "wb")
         self.proc = subprocess.Popen(self.args, stdout=self._log, stderr=self._log)
 

@@ -9,7 +9,13 @@ SRC="$IMAGES/initramfs-virt"
 OUT="$IMAGES/m0-guest.cpio.gz"
 WORK="$RUN/initramfs-build"
 KMODS="$RUN/kmods"
-EXTRA_MODULES="${EXTRA_MODULES:-ext4}"
+# e1000e 是伪装用的：virtio 网卡的 PCI ID 是 0x1af4（Red Hat），
+# virtio 盘挂出来叫 /dev/vda，两样都直接写着「我是虚拟机」。
+# 换成 Intel 82574L（0x8086）+ AHCI（/dev/sda）就看不出来了。
+# ahci 是内核内建的，不用单独收。
+# ahci/libata 是内核内建的，但 sd_mod 不是 —— 少了它 SATA 盘
+# 只会在 dmesg 里被 libata 认出来，永远不出现 /dev/sda。
+EXTRA_MODULES="${EXTRA_MODULES:-ext4 e1000e sd_mod}"
 
 [[ -f "$SRC" ]] || die "缺少 $SRC，先跑 00-fetch-images.sh"
 
@@ -46,7 +52,10 @@ fi
 
 log "装入 m0/guest/{init,common.sh}"
 install -m 0755 "$M0_ROOT/guest/init"      "$WORK/init"
-install -m 0644 "$M0_ROOT/guest/common.sh" "$WORK/etc/m0-common.sh"
+# 放 /lib/m0 而不是 /etc：玩家 ls /etc 一眼就能看见 m0-common.sh，穿帮。
+# 启动末尾 m0_disguise 还会往这个目录上盖一层空 tmpfs，本次会话里它是空的。
+install -d "$WORK/lib/m0"
+install -m 0644 "$M0_ROOT/guest/common.sh" "$WORK/lib/m0/common.sh"
 
 log "重新打包 -> $OUT"
 ( cd "$WORK" && find . -print0 | cpio --null -o -H newc --quiet ) | gzip -9 > "$OUT"

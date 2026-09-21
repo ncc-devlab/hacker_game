@@ -12,9 +12,9 @@ $BB --install -s /bin
 export PATH=/bin:/sbin:/usr/bin:/usr/sbin
 export HOME=/root; mkdir -p /root
 
-for m in virtio_pci virtio_net virtio_blk e1000 ext4; do modprobe $m 2>/dev/null; done
+for m in virtio_pci virtio_net virtio_blk e1000 e1000e sd_mod ext4; do modprobe $m 2>/dev/null; done
 
-. /etc/m0-common.sh
+. /lib/m0/common.sh
 
 M0_ROOTDEV="$(m0_cmdline_get m0.root)"
 if [ -n "$M0_ROOTDEV" ]; then
@@ -25,7 +25,7 @@ if [ -n "$M0_ROOTDEV" ]; then
         mount --move /proc /newroot/proc 2>/dev/null
         mount --move /sys  /newroot/sys  2>/dev/null
         mount --move /dev  /newroot/dev  2>/dev/null
-        exec switch_root /newroot /sbin/m0-init
+        exec switch_root /newroot /sbin/init
     fi
     echo "!! 挂载 $M0_ROOTDEV 失败，退回 initramfs shell"
 fi
@@ -33,5 +33,6 @@ fi
 m0_mount_pty
 m0_setup_net
 m0_start_agent
+m0_disguise
 m0_banner
 m0_console_loop

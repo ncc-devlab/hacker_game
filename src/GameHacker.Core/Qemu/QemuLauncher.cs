@@ -29,6 +29,15 @@ public sealed record VmSpec
     /// snapshot 为 true 时改由 QEMU 把写入丢进临时文件，镜像保持原样（测试用）。
     /// </summary>
     public bool Ephemeral { get; init; }
+
+    /// <summary>
+    /// 这台机器对玩家宣称的身份（主板 / BIOS / CPU / 内核版本）。
+    /// </summary>
+    /// <remarks>
+    /// 默认 <see cref="HardwarePersona.None"/> —— 不伪装，保持 M0/M1 老测试的口径。
+    /// 游戏里应当显式给每台机器挑一个预设。
+    /// </remarks>
+    public HardwarePersona Persona { get; init; } = HardwarePersona.None;
 }
 
 /// <summary>
@@ -94,8 +103,10 @@ public sealed class QemuLauncher : IAsyncDisposable, IDisposable
         // 有盘就让 initramfs 挂载并 switch_root 进去（完整 Alpine 主角机），
         // 无盘就地当纯内存的极小目标机跑。
         // 镜像是 mke2fs 直接造的整盘文件系统、没有分区表，所以根设备是 /dev/vda。
-        string rootArg = spec.DiskPath is null ? "" : " m0.root=/dev/vda";
+        // AHCI 而不是 virtio-blk：virtio 盘挂出来叫 /dev/vda，一眼就是虚拟机。
+        string rootArg = spec.DiskPath is null ? "" : " m0.root=/dev/sda";
         string ipArg = spec.IpAddress is null ? "" : $" m0.ip={spec.IpAddress}";
+        string personaArg = spec.Persona.KernelCmdlineFragment();
 
         var args = new List<string>
         {
@@ -105,22 +116,32 @@ public sealed class QemuLauncher : IAsyncDisposable, IDisposable
             "-display", "none", "-vga", "none", "-monitor", "none",
             "-kernel", spec.KernelPath,
             "-initrd", spec.InitrdPath,
-            "-append", $"console=ttyS0 quiet loglevel=3 tsc=unstable m0.host={spec.Name}{ipArg}{rootArg}",
+            "-append", $"console=ttyS0 quiet loglevel=3 tsc=unstable "
+                       + $"m0.host={spec.Name}{ipArg}{rootArg}{personaArg}",
             "-chardev", chardev("con", consolePort), "-serial", "chardev:con",
             "-chardev", chardev("ctl", controlPort), "-serial", "chardev:ctl",
             "-netdev", $"stream,id=n0,addr.type=inet,addr.host=127.0.0.1," +
                        $"addr.port={spec.SwitchPort},server=off,reconnect-ms=1000",
+            // Intel 82574L 而不是 virtio-net：virtio 的 PCI ID 是 0x1af4（Red Hat），
+            // 客户机里 lspci / /sys/class/net/eth0/device/vendor 直接就穿帮了。
             // romfile= 关掉 PXE 引导 ROM：我们永远不网络引导，
-            // 留着就得多发一个 efi-virtio.rom，还白占客户机内存
-            "-device", $"virtio-net-pci,netdev=n0,romfile=,mac={spec.MacAddress}",
+            // 留着就得多发一个 efi-e1000e.rom，还白占客户机内存
+            "-device", $"e1000e,netdev=n0,romfile=,mac={spec.MacAddress}",
             "-qmp", $"tcp:127.0.0.1:{qmpPort},server=on,wait=off",
         };
 
+        // 伪装：主板 / BIOS / CPU 型号。全是 QEMU 原生参数，不需要魔改。
+        args.AddRange(spec.Persona.QemuArguments());
+
         if (spec.DiskPath is not null)
         {
+            // q35 的 if=ide 不会接到内建的 ich9-ahci 上（QEMU 不报错，客户机里就是没盘），
+            // 必须显式把 ide-hd 挂到 ide.0。
             string snapshot = spec.Ephemeral ? ",snapshot=on" : "";
             args.Add("-drive");
-            args.Add($"file={spec.DiskPath},if=virtio,format=qcow2{snapshot}");
+            args.Add($"file={spec.DiskPath},if=none,id=d0,format=qcow2{snapshot}");
+            args.Add("-device");
+            args.Add($"ide-hd,drive=d0,bus=ide.0{spec.Persona.DiskDeviceSuffix()}");
         }
 
         return args;

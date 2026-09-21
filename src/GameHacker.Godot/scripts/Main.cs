@@ -60,10 +60,14 @@ public partial class Main : Control
             SetStatus($"交换机监听 127.0.0.1:{_switch.Port}，正在拉起两台虚拟机…");
 
             // 主角机带可写磁盘（完整 Alpine，有 vim/tmux）；目标机纯内存，对应"遍地的老旧小机器"
-            _alpha = new VmSession(NewSpec("alpha", AlphaIp, "52:54:00:00:00:01", _switch.Port,
+            // 人设决定客户机对玩家宣称的主板 / BIOS / CPU / 内核版本。
+            // 主机名也跟着人设走 —— alpha/beta 这种名字一看就是测试用的。
+            _alpha = new VmSession(NewSpec("web01", AlphaIp, "52:54:00:00:00:01", _switch.Port,
+                                           HardwarePersona.Workstation,
                                            disk: GamePaths.AlpineDisk, memory: 512),
                                    _mainTerm, this);
-            _beta = new VmSession(NewSpec("beta", BetaIp, "52:54:00:00:00:02", _switch.Port),
+            _beta = new VmSession(NewSpec("backup", BetaIp, "52:54:00:00:00:02", _switch.Port,
+                                          HardwarePersona.LegacyServer),
                                   _targetTerm, this);
 
             // 排查间歇性启动问题时用 GAMEHACKER_BOOT_TIMEOUT 缩短等待
@@ -80,6 +84,7 @@ public partial class Main : Control
                 ? $"任务完成：{BetaIp} 与 {AlphaIp} 互通，交换机已转发 {_switch.FramesForwarded} 帧"
                 : "ping 未通 —— 见 m0/run 下的日志", ok ? Colors.LightGreen : Colors.IndianRed);
 
+            await MaybeSelfTestAsync(ok ? "互通" : "不通");
             await MaybeScreenshotAsync();
         }
         catch (Exception ex)
@@ -98,9 +103,11 @@ public partial class Main : Control
     }
 
     private static VmSpec NewSpec(string name, string ip, string mac, int switchPort,
+                                  HardwarePersona persona,
                                   string? disk = null, int memory = 256) => new()
     {
         Name = name,
+        Persona = persona,
         KernelPath = GamePaths.Kernel,
         InitrdPath = GamePaths.Initrd,
         DiskPath = disk,
@@ -113,6 +120,40 @@ public partial class Main : Control
         // 交换机用 bind 0 让系统分配端口，避免多开或并发测试时撞端口
         SwitchPort = switchPort,
     };
+
+    /// <summary>
+    /// 设了 GAMEHACKER_SELFTEST 就跑一遍无人值守自检，把报告写到那个路径。
+    /// </summary>
+    /// <remarks>
+    /// 给 Windows / macOS 验证用。Linux 上 M0/M1 的测试走裸串口，
+    /// 绕开了 Godot 输入链和 GDExtension —— 恰恰是换平台最容易坏的两处。
+    /// </remarks>
+    private async Task MaybeSelfTestAsync(string bootDetail)
+    {
+        string? path = System.Environment.GetEnvironmentVariable("GAMEHACKER_SELFTEST");
+        if (string.IsNullOrWhiteSpace(path)) return;
+
+        bool ok;
+        try
+        {
+            ok = await SelfTest.RunAsync(this, _mainTerm, bootDetail);
+        }
+        catch (Exception ex)
+        {
+            ok = false;
+            GD.PushError($"[selftest] 自检本身抛异常: {ex}");
+        }
+
+        try { System.IO.File.WriteAllText(path, SelfTest.Report()); }
+        catch (Exception ex) { GD.PushError($"[selftest] 报告写不出去: {ex.Message}"); }
+
+        SetStatus(ok ? "自检全部通过" : "自检有未通过项，见报告", ok ? Colors.LightGreen : Colors.IndianRed);
+        await Task.Delay(300);
+
+        // 没要截图就到此为止；要截图的话留给 MaybeScreenshotAsync 退出
+        if (string.IsNullOrWhiteSpace(System.Environment.GetEnvironmentVariable("GAMEHACKER_SCREENSHOT")))
+            GetTree().Quit(ok ? 0 : 1);
+    }
 
     /// <summary>
     /// 设了 GAMEHACKER_SCREENSHOT 就在终端里演示几条命令、截图、退出。

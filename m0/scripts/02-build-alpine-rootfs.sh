@@ -38,8 +38,12 @@ log "安装: $PKGS"
 "${APK[@]}" --root "$ROOT" --arch x86_64 --no-interactive add $PKGS
 
 log "装入 stage2 与公共启动逻辑"
-install -m 0755 "$M0_ROOT/guest/stage2"    "$ROOT/sbin/m0-init"
-install -m 0644 "$M0_ROOT/guest/common.sh" "$ROOT/etc/m0-common.sh"
+# 装成 /sbin/init 而不是 /sbin/m0-init：真机上就该有这个文件，
+# 叫 m0-init 的话玩家 ls /sbin 一眼就看出来这是个被改过的系统。
+install -m 0755 "$M0_ROOT/guest/stage2"    "$ROOT/sbin/init"
+install -d "$ROOT/lib/m0"
+install -m 0644 "$M0_ROOT/guest/common.sh" "$ROOT/lib/m0/common.sh"
+rm -f "$ROOT/etc/m0-common.sh" "$ROOT/sbin/m0-init"
 
 # 终端相关的最小配置：TERM 由 getty 设置，这里只保证 vim/tmux 有像样的默认行为
 cat > "$ROOT/root/.vimrc" <<'EOF'

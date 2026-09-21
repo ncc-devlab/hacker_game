@@ -1,7 +1,9 @@
 # --- 大体积第三方源码与构建产物（绝不入库）---
 third_party/*.tar.*
 third_party/*.zip
+# 参考用的上游仓库克隆（qemu / buildroot），只读，不入库
 qemu/
+third_party/buildroot/
 build/
 runtime/
 
