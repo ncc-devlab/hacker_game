@@ -67,9 +67,11 @@ function Section([string]$Title) {
     Write-Host "=== $Title ===" -ForegroundColor Cyan
 }
 
-<# 带超时地跑一个外部程序，stdout/stderr 各落一个文件。返回退出码，超时返回 -1。 #>
+<# 带超时地跑一个外部程序，stdout/stderr 各落一个文件。
+   返回退出码；超时 -1；启动失败 -2；stderr 命中 FailPattern 提前终止 -3。 #>
 function Invoke-Logged([string]$Exe, [string[]]$Arguments, [string]$LogName,
-                       [int]$TimeoutSeconds = 600, [string]$WorkDir = $Repo) {
+                       [int]$TimeoutSeconds = 600, [string]$WorkDir = $Repo,
+                       [string]$FailPattern = '') {
     $stdout = Join-Path $Out "$LogName.out.txt"
     $stderr = Join-Path $Out "$LogName.err.txt"
     # Start-Process 的 -ArgumentList 在 5.1 下不会替你加引号，带空格的参数要自己包
@@ -82,10 +84,26 @@ function Invoke-Logged([string]$Exe, [string[]]$Arguments, [string]$LogName,
         Set-Content -Path $stderr -Value $_.Exception.Message
         return -2
     }
-    if (-not $p.WaitForExit($TimeoutSeconds * 1000)) {
-        try { $p.Kill() } catch { }
-        return -1
+    # Windows PowerShell 5.1 的坑：Start-Process -PassThru 拿到的 Process 对象
+    # 如果没在进程退出前碰过 Handle，事后 ExitCode 永远是空的 ——
+    # 第一轮 Windows 报告里所有"退出码"后面都是空白，就是这个原因。
+    $null = $p.Handle
+    $deadline = (Get-Date).AddSeconds($TimeoutSeconds)
+    while (-not $p.HasExited) {
+        if ((Get-Date) -gt $deadline) {
+            try { $p.Kill() } catch { }
+            return -1
+        }
+        # 已知的致命错误出现在日志里就不必等到超时：比如 C# 没编译出来时，
+        # Godot 找不到 Main 类，场景里没有任何代码会调 Quit，只会空转到超时。
+        if ($FailPattern -and (Test-Path $stderr) -and
+            (Select-String -Path $stderr -Pattern $FailPattern -Quiet)) {
+            try { $p.Kill() } catch { }
+            return -3
+        }
+        Start-Sleep -Milliseconds 500
     }
+    $p.WaitForExit()
     return $p.ExitCode
 }
 
@@ -113,12 +131,38 @@ if ($env:PROCESSOR_ARCHITECTURE -ne 'AMD64') {
 
 # ---------------------------------------------------------------------------
 Section '2. .NET 与 Core 测试'
-$dotnet = Get-Command dotnet -ErrorAction SilentlyContinue
-if (-not $dotnet) {
-    Step '.NET SDK' $false '找不到 dotnet，装 .NET 8 SDK 或更新版本：https://dotnet.microsoft.com/download'
+# 常见误会：装了".NET 10"但装的是运行时（Runtime / Desktop Runtime）而不是 SDK；
+# .NET Framework 4.8.x 是另一套东西，和这里无关。
+# 另一个常见坑：PATH 里 Program Files (x86)\dotnet 排在 64 位那份前面，
+# 32 位的 dotnet 下面没有 SDK。所以把每一份 dotnet.exe 都列出来。
+$dotnet = $null
+$dotnetReport = New-Object System.Collections.ArrayList
+$candidates = @()
+$where = & where.exe dotnet 2>$null
+if ($where) { $candidates += $where }
+$candidates += @("$env:ProgramFiles\dotnet\dotnet.exe", "${env:ProgramFiles(x86)}\dotnet\dotnet.exe")
+foreach ($c in ($candidates | Where-Object { $_ -and (Test-Path $_) } | Select-Object -Unique)) {
+    $sdkList = @(& $c --list-sdks 2>$null | Where-Object { $_ })
+    $rtList = @(& $c --list-runtimes 2>$null | Where-Object { $_ })
+    if ($sdkList.Count -gt 0) { $sdkText = $sdkList -join '; ' } else { $sdkText = '(无)' }
+    if ($rtList.Count -gt 0) { $rtText = $rtList -join '; ' } else { $rtText = '(无)' }
+    [void]$dotnetReport.Add("$c")
+    [void]$dotnetReport.Add("  SDK:    $sdkText")
+    [void]$dotnetReport.Add("  运行时: $rtText")
+    if (-not $dotnet -and ($sdkList -match '^\s*([89]|\d\d)\.')) { $dotnet = $c }
+}
+$dotnetText = $dotnetReport -join "`n"
+Set-Content -Path (Join-Path $Out 'dotnet-info.txt') -Value $dotnetText -Encoding UTF8
+Write-Host $dotnetText
+if ($dotnet) {
+    Step '.NET SDK' $true $dotnet
+    # 后面所有步骤都用这一份，避免 PATH 先命中那份没有 SDK 的
+    $env:PATH = (Split-Path $dotnet) + ';' + $env:PATH
+} elseif ($dotnetReport.Count -gt 0) {
+    Step '.NET SDK' $false ('找到了 dotnet 但没有 8 或更新版本的 SDK（只有运行时不够，需要 SDK）。' +
+        '装 .NET 10 SDK：https://dotnet.microsoft.com/download/dotnet/10.0 —— 选 "SDK" 那一栏')
 } else {
-    $sdks = (& dotnet --list-sdks) -join '; '
-    Step '.NET SDK' ($sdks -match '^\s*([89]|\d\d)\.') $sdks
+    Step '.NET SDK' $false '找不到 dotnet。装 .NET 10 SDK：https://dotnet.microsoft.com/download/dotnet/10.0'
 }
 
 # ---------------------------------------------------------------------------
@@ -142,8 +186,12 @@ if (-not $qemuExe -or -not (Test-Path $qemuExe)) {
     # 游戏侧（GamePaths）只认 runtime\ 下的那份或 PATH 里的名字；
     # 找到别处的就显式交给它，保证测的就是这里检查过的这一份
     $env:GAMEHACKER_QEMU = $qemuExe
-    $ver = (& $qemuExe -version 2>&1 | Select-Object -First 1)
-    Step 'QEMU 可执行文件' ($LASTEXITCODE -eq 0) "$qemuExe  ($ver)"
+    # 先收全输出再取第一行：管道里直接 Select-Object -First 1 会提前掐断，
+    # 5.1 下 $LASTEXITCODE 随之不可信 —— 第一轮报告里版本号都打出来了却判 FAIL
+    $verOut = @(& $qemuExe -version 2>&1)
+    $qemuOk = ($LASTEXITCODE -eq 0)
+    $ver = "$($verOut | Select-Object -First 1)"
+    Step 'QEMU 可执行文件' $qemuOk "$qemuExe  ($ver)"
 
     # 伪装需要的三样：Windows 上可能用的是别人的构建，不能假定和 Linux 裁剪版一致
     $cpus = (& $qemuExe -cpu help 2>&1) -join "`n"
@@ -164,7 +212,7 @@ foreach ($f in 'vmlinuz-virt', 'm0-guest.cpio.gz', 'alpine-main.qcow2') {
 if ($missing.Count -gt 0) {
     Step '客户机镜像' $false ("缺少 {0}。镜像只能在 Linux 上构建，在 Linux 上跑 scripts/pack-for-windows.sh 后把 zip 解到仓库根" -f ($missing -join ', '))
 } else {
-    $sizes = Get-ChildItem $images | ForEach-Object { '{0}={1:N1}MB' -f $_.Name, ($_.Length / 1MB) }
+    $sizes = Get-ChildItem $images | Where-Object { $_.Name -ne '.gitkeep' } | ForEach-Object { '{0}={1:N1}MB' -f $_.Name, ($_.Length / 1MB) }
     Step '客户机镜像' $true ($sizes -join ' ')
 }
 
@@ -176,6 +224,8 @@ if ($dotnet) {
                 Select-Object -Last 1)
     if ($summary) { $detail = $summary.Line.Trim() } else { $detail = "退出码 $code" }
     Step 'dotnet test' ($code -eq 0) $detail
+} else {
+    Step 'dotnet test' $false '跳过：没有 .NET SDK（见第 2 步）'
 }
 
 # ---------------------------------------------------------------------------
@@ -239,6 +289,8 @@ if (-not $godotExe -or -not (Test-Path $godotExe)) {
     if ($dotnet) {
         $code = Invoke-Logged 'dotnet' @('build', (Join-Path $project 'GameHacker.Godot.csproj'), '--nologo', '-v', 'q') 'godot-build' 300
         Step 'Godot 工程 C# 编译' ($code -eq 0) (Tail (Join-Path $Out 'godot-build.out.txt') 2)
+    } else {
+        Step 'Godot 工程 C# 编译' $false '跳过：没有 .NET SDK（见第 2 步）'
     }
     $code = Invoke-Logged $godotExe @('--headless', '--path', $project, '--import') 'godot-import' 300
     Step 'Godot 资源导入' ($code -eq 0 -or $code -eq -1) "退出码 $code"
@@ -249,15 +301,31 @@ if (-not $godotExe -or -not (Test-Path $godotExe)) {
     $env:GAMEHACKER_SELFTEST = $report
     $env:GAMEHACKER_PCAP = Join-Path $Out 'capture.pcap'
     $t0 = Get-Date
-    $code = Invoke-Logged $godotExe @('--headless', '--path', $project) 'godot-selftest' ($BootTimeoutSeconds + 180)
+    if ($dotnet) {
+        # C# 没编译出来时 Godot 找不到 Main 类、没有代码会调 Quit，只会空转到超时；
+        # 看见这类错误就提前收掉
+        $code = Invoke-Logged $godotExe @('--headless', '--path', $project) 'godot-selftest' ($BootTimeoutSeconds + 180) `
+                    -FailPattern 'Cannot instantiate C# script|Failed to load .NET runtime|hostfxr'
+    } else {
+        $code = -4
+    }
     $elapsed = [int]((Get-Date) - $t0).TotalSeconds
-    if (Test-Path $report) {
+    if ($code -eq -4) {
+        Step 'Godot 自检' $false '跳过：没有 .NET SDK，C# 脚本编译不出来（见第 2 步）'
+    } elseif (Test-Path $report) {
         $lines = @(Get-Content $report)
         $pass = @($lines | Where-Object { $_ -like 'PASS*' }).Count
         Step "Godot 自检 (${elapsed}s)" (($code -eq 0) -and ($pass -eq $lines.Count)) "$pass/$($lines.Count) 项通过，退出码 $code"
         foreach ($l in $lines) { Write-Host "    $l" }
     } else {
-        Step "Godot 自检 (${elapsed}s)" $false "没有生成报告（退出码 $code，-1=超时）。见 godot-selftest.*.txt"
+        if ($code -eq -3) {
+            $why = 'Godot 加载不了 C# 脚本（C# 没编译出来或 .NET 运行时加载失败）'
+        } elseif ($code -eq -1) {
+            $why = '超时'
+        } else {
+            $why = "退出码 $code"
+        }
+        Step "Godot 自检 (${elapsed}s)" $false "没有生成报告：$why。见 godot-selftest.*.txt"
         Write-Host (Tail (Join-Path $Out 'godot-selftest.out.txt') 25)
     }
 
@@ -306,7 +374,21 @@ if ($failed.Count -eq 0) {
 
 Stop-Transcript | Out-Null
 $zipPath = "$Out.zip"
-Compress-Archive -Path (Join-Path $Out '*') -DestinationPath $zipPath -Force
+# 不用 Compress-Archive：5.1 的实现用反斜杠做 zip 内路径分隔符，
+# 在 Linux/macOS 上解出来会变成 "godot-user-logs\godot.log" 这样的文件名
+# （第一轮回传的包就是这样）。
+Add-Type -AssemblyName System.IO.Compression, System.IO.Compression.FileSystem
+if (Test-Path $zipPath) { Remove-Item $zipPath -Force }
+$archive = [System.IO.Compression.ZipFile]::Open($zipPath, 'Create')
+try {
+    $base = (Resolve-Path $Out).Path.TrimEnd('\') + '\'
+    foreach ($file in Get-ChildItem -Path $Out -Recurse -File) {
+        $entry = $file.FullName.Substring($base.Length).Replace('\', '/')
+        [void][System.IO.Compression.ZipFileExtensions]::CreateEntryFromFile($archive, $file.FullName, $entry)
+    }
+} finally {
+    $archive.Dispose()
+}
 Write-Host ''
 Write-Host "日志目录: $Out"
 Write-Host "打包:     $zipPath   <- 把这个发回来" -ForegroundColor Cyan
