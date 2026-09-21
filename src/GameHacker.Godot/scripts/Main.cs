@@ -23,7 +23,9 @@ public partial class Main : Control
     private Label _status = null!;
     private Control _mainTerm = null!;
     private Control _targetTerm = null!;
+    private PacketPanel _packets = null!;
 
+    private readonly PacketLog _packetLog = new();
     private VirtualSwitch? _switch;
     private VmSession? _alpha;
     private VmSession? _beta;
@@ -33,6 +35,8 @@ public partial class Main : Control
         _status = GetNode<Label>("%Status");
         _mainTerm = GetNode<Control>("%MainTerminal");
         _targetTerm = GetNode<Control>("%TargetTerminal");
+        _packets = GetNode<PacketPanel>("%Packets");
+        _packets.Attach(_packetLog);
 
         if (!GamePaths.ImagesReady)
         {
@@ -54,7 +58,8 @@ public partial class Main : Control
             if (reaped > 0) GD.Print($"[m2] 回收了 {reaped} 个上次残留的虚拟机");
 
             SetStatus("启动虚拟交换机…");
-            _switch = new VirtualSwitch(port: 0);
+            // 交换机是概要书里唯一的流量观察点，抓包面板和关卡判定都挂在这个旁观者上
+            _switch = new VirtualSwitch(port: 0, _packetLog);
             _ = _switch.RunAsync();
 
             SetStatus($"交换机监听 127.0.0.1:{_switch.Port}，正在拉起两台虚拟机…");
@@ -168,9 +173,10 @@ public partial class Main : Control
         if (string.IsNullOrWhiteSpace(path)) return;
 
         // 往两个终端里敲点东西，好让截图上有内容
-        await TypeAsync(_alpha!, "uname -a; cat /etc/alpine-release; ls /usr/bin | head -5\n");
-        await TypeAsync(_beta!, "ip -4 addr show eth0; ping -c1 10.0.0.1\n");
-        await Task.Delay(2500);
+        // 挑的命令要同时展示三样东西：终端渲染、伪装生效、以及抓包面板有货
+        await TypeAsync(_alpha!, "uname -a; cat /sys/class/dmi/id/product_name\n");
+        await TypeAsync(_beta!, "ping -c2 10.0.0.1\n");
+        await Task.Delay(4000);
 
         // 截图必须在主线程、且要等当前帧画完
         await ToSignal(RenderingServer.Singleton, RenderingServerInstance.SignalName.FramePostDraw);
@@ -208,6 +214,14 @@ public partial class Main : Control
     /// </remarks>
     public override void _ExitTree()
     {
+        // 三端验证时把这一轮的流量留成证据，用 Wireshark 就能对照
+        string? pcap = System.Environment.GetEnvironmentVariable("GAMEHACKER_PCAP");
+        if (!string.IsNullOrWhiteSpace(pcap))
+        {
+            try { _packetLog.WritePcap(pcap); GD.Print($"[m2] 抓包已存 {pcap}"); }
+            catch (Exception ex) { GD.PushError($"[m2] 抓包写不出去: {ex.Message}"); }
+        }
+
         _alpha?.Dispose();
         _beta?.Dispose();
         _switch?.DisposeAsync().AsTask().Wait(2000);

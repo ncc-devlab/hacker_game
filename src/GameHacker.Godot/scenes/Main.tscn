@@ -1,6 +1,7 @@
-[gd_scene load_steps=2 format=3 uid="uid://bghm2main0"]
+[gd_scene load_steps=3 format=3 uid="uid://bghm2main0"]
 
 [ext_resource type="Script" path="res://scripts/Main.cs" id="1_main"]
+[ext_resource type="Script" path="res://scripts/PacketPanel.cs" id="2_packets"]
 
 [node name="Main" type="Control"]
 layout_mode = 3
@@ -28,32 +29,43 @@ unique_name_in_owner = true
 layout_mode = 2
 text = "初始化…"
 
-[node name="Split" type="HSplitContainer" parent="Layout"]
+[node name="VSplit" type="VSplitContainer" parent="Layout"]
+layout_mode = 2
+size_flags_vertical = 3
+split_offset = 520
+
+[node name="Split" type="HSplitContainer" parent="Layout/VSplit"]
 layout_mode = 2
 size_flags_vertical = 3
 
-[node name="MainPane" type="VBoxContainer" parent="Layout/Split"]
+[node name="MainPane" type="VBoxContainer" parent="Layout/VSplit/Split"]
 layout_mode = 2
 size_flags_horizontal = 3
 
-[node name="Title" type="Label" parent="Layout/Split/MainPane"]
+[node name="Title" type="Label" parent="Layout/VSplit/Split/MainPane"]
 layout_mode = 2
-text = "主角机 — Alpine 10.0.0.1  (vim / tmux 可用)"
+text = "web01 — 10.0.0.1   Dell OptiPlex 7010"
 
-[node name="MainTerminal" type="Terminal" parent="Layout/Split/MainPane"]
+[node name="MainTerminal" type="Terminal" parent="Layout/VSplit/Split/MainPane"]
 unique_name_in_owner = true
 layout_mode = 2
 size_flags_vertical = 3
 
-[node name="TargetPane" type="VBoxContainer" parent="Layout/Split"]
+[node name="TargetPane" type="VBoxContainer" parent="Layout/VSplit/Split"]
 layout_mode = 2
 size_flags_horizontal = 3
 
-[node name="Title" type="Label" parent="Layout/Split/TargetPane"]
+[node name="Title" type="Label" parent="Layout/VSplit/Split/TargetPane"]
 layout_mode = 2
-text = "目标机 — 极小 Linux 10.0.0.2"
+text = "backup — 10.0.0.2   Supermicro X8DTU"
 
-[node name="TargetTerminal" type="Terminal" parent="Layout/Split/TargetPane"]
+[node name="TargetTerminal" type="Terminal" parent="Layout/VSplit/Split/TargetPane"]
 unique_name_in_owner = true
 layout_mode = 2
 size_flags_vertical = 3
+
+[node name="Packets" type="PanelContainer" parent="Layout/VSplit"]
+unique_name_in_owner = true
+custom_minimum_size = Vector2(0, 200)
+layout_mode = 2
+script = ExtResource("2_packets")
