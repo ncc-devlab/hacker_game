@@ -71,16 +71,12 @@ ttyS0 的原始字节流，再对渲染结果做断言（`probe/term.py`）。
 这把两个风险解耦了：**字节流对不对**是我们的责任，**godot-xterm 渲染对不对**
 是它的责任。本层绿了之后，godot-xterm 里的任何不一致都能直接定位到它身上。
 
-**三条必须交给 godot-xterm 验证的序列**（都是实测踩出来的）：
+**三条 pyte 处理不了、但需要终端实现的序列**：`CSI 6 n`（DSR 光标位置查询）、
+`CSI > 4 ; 2 m`（XTMODKEYS）、`ESC ( 0`（DEC 特殊图形，tmux 用它画框线）。
 
-1. **`CSI 6 n`（DSR，光标位置查询）必须应答。** 客户机的 busybox ash 提示符
-   每次都会发它，期待终端回 `CSI row;col R`。不应答 shell 和全屏程序会错乱。
-2. **`CSI > 4 ; 2 m`（XTMODKEYS / modifyOtherKeys）不能崩。** vim 一进来就发。
-   pyte 0.8.2 在这条上直接抛 TypeError，我们打了补丁绕过（见 `term.py`）。
-   godot-xterm 很可能有同类问题。
-3. **DEC 特殊图形字符集（`ESC ( 0`）必须实现。** tmux 的 pane 分隔线用它画，
-   `q` 在该字符集下是横线。不实现的话 tmux 的框线会渲染成一整行字母 q
-   —— 我们的 pyte 视图里现在就是这样，那是 pyte 的局限，不是字节流的问题。
+> ⚠ 更正：这三条我一度记成「必须交给 godot-xterm 验证的风险」。
+> 实测下来**三条都是 pyte 自己的缺陷，godot-xterm 的引擎（libtsm）全部正确处理**。
+> 证据与选型结论见 [终端引擎选型](../docs/终端引擎选型.md)。
 
 **客户机必须挂 devpts，否则 tmux 起不来。** devtmpfs 不会自动建 `/dev/pts` 目录，
 不先 `mkdir` 的话 `mount -t devpts` 会失败，症状是 tmux 报

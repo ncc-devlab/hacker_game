@@ -89,6 +89,7 @@ FIRMWARE_KEEP=(
   bios-256k.bin        # SeaBIOS，q35 的默认 BIOS。即便 -kernel 直接引导也要它来装载
   kvmvapic.bin         # pc/q35 默认加载
   linuxboot_dma.bin    # -kernel 走 DMA 快速装载用的 option ROM
+  vgabios-stdvga.bin   # 概要书里开局那台 FreeDOS 需要 VGA 文本模式，不是串口
 )
 # efi-virtio.rom 不在白名单里：那是 virtio-net-pci 的 PXE 引导 ROM，
 # 我们永远不网络引导，改用 romfile= 把它关掉（见 QemuLauncher / m0lib）。
