@@ -16,11 +16,16 @@
     <PackageReference Include="Microsoft.NET.Test.Sdk" Version="17.11.1" />
     <PackageReference Include="xunit" Version="2.9.2" />
     <PackageReference Include="xunit.runner.visualstudio" Version="2.8.2" />
+    <!-- 集成测试依赖 M0 构建出来的镜像，而镜像是不入库的构建产物。
+         缺镜像时要「跳过」而不是「失败」，否则会把环境没准备好
+         和代码坏了混为一谈。 -->
+    <PackageReference Include="Xunit.SkippableFact" Version="1.5.23" />
   </ItemGroup>
 
   <ItemGroup>
     <!-- ImplicitUsings 不含 Xunit，集中在这里声明，省得每个测试文件重复 -->
     <Using Include="Xunit" />
+    <Using Include="Xunit.Sdk" />
   </ItemGroup>
 
   <ItemGroup>

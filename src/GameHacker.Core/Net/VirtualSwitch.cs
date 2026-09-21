@@ -80,26 +80,40 @@ public sealed class VirtualSwitch : IAsyncDisposable
 
     private async Task PumpPortAsync(SwitchPort port, CancellationToken cancellationToken)
     {
-        var buffer = new byte[64 * 1024];
-        var pending = new List<byte>(64 * 1024);
+        // 收帧是热路径：用一个可增长的字节缓冲 + 已填充长度，
+        // 不要每帧 ToArray() —— 那是 O(n²) 的分配。
+        var buffer = new byte[128 * 1024];
+        int filled = 0;
+
         try
         {
             var stream = port.Client.GetStream();
             while (!cancellationToken.IsCancellationRequested)
             {
-                int read = await stream.ReadAsync(buffer, cancellationToken);
+                if (filled == buffer.Length)
+                    Array.Resize(ref buffer, buffer.Length * 2);
+
+                int read = await stream.ReadAsync(
+                    buffer.AsMemory(filled, buffer.Length - filled), cancellationToken);
                 if (read == 0) break;
+                filled += read;
 
-                pending.AddRange(buffer.AsSpan(0, read).ToArray());
-
-                // 拆帧：TCP 是字节流，一次 read 可能拿到半个帧或好几个帧
+                // 一次 read 可能拿到半个帧，也可能拿到好几个（TCP 是字节流）
+                int offset = 0;
                 while (true)
                 {
-                    var window = new ReadOnlyMemory<byte>(pending.ToArray());
+                    var window = new ReadOnlyMemory<byte>(buffer, offset, filled - offset);
                     var frame = StreamFrameCodec.TryReadFrame(window, out int consumed);
                     if (frame is null) break;
-                    pending.RemoveRange(0, consumed);
                     Forward(port.Id, frame.Value.Span);
+                    offset += consumed;
+                }
+
+                // 把没拆完的尾巴挪到开头
+                if (offset > 0)
+                {
+                    Buffer.BlockCopy(buffer, offset, buffer, 0, filled - offset);
+                    filled -= offset;
                 }
             }
         }
@@ -133,21 +147,20 @@ public sealed class VirtualSwitch : IAsyncDisposable
             if (now - entry.LastSeen > MacAgeTimeout)
                 _macTable.TryRemove(mac, out _);
 
-        var destination = eth.Destination;
-        // 目的已知且是单播 -> 只发那个口；未知 / 广播 / 组播 -> 泛洪
-        bool unicastHit = !destination.IsGroupAddress
-                          && _macTable.TryGetValue(destination, out var target)
-                          && target.PortId != sourcePortId;
-
         var header = new byte[StreamFrameCodec.HeaderSize];
         StreamFrameCodec.WriteHeader(header, frame.Length);
         var payload = frame.ToArray();
 
-        if (unicastHit)
+        // 目的地址已知且是单播 -> 只发那一个口；未知 / 广播 / 组播 -> 泛洪。
+        // 注意只查一次表：查两次的话表项可能在两次之间被老化掉，
+        // 第二次拿到 default 会把帧发去 0 号端口。
+        var destination = eth.Destination;
+        if (!destination.IsGroupAddress
+            && _macTable.TryGetValue(destination, out var target)
+            && target.PortId != sourcePortId
+            && _ports.TryGetValue(target.PortId, out var only))
         {
-            _macTable.TryGetValue(destination, out var entry);
-            if (_ports.TryGetValue(entry.PortId, out var only))
-                only.TrySend(header, payload);
+            only.TrySend(header, payload);
             return;
         }
 
