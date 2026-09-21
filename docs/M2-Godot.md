@@ -88,6 +88,24 @@ M1 的集成测试没有并发等待者，所以这个缺陷一直没暴露。
 headless 无布局时 Terminal 报 `(cols, 0)`。把它发给客户机会让 `stty`
 设出一个 0 行的终端。`TerminalBridge` 现在会过滤掉任何非正的尺寸。
 
+## 稳定性复跑
+
+修复后在干净环境下连跑六次，**六次全部「任务完成」，零残留 QEMU**。
+只有第一次回收到 2 个孤儿（调试期间的残留），后五次一个都没有 ——
+说明同步清理确实不再产生孤儿。
+
+```bash
+for i in $(seq 6); do
+  GAMEHACKER_BOOT_TIMEOUT=30 timeout 80 godot-mono --headless \
+    --path src/GameHacker.Godot > /tmp/try$i.log 2>&1
+done
+grep -l 任务完成 /tmp/try*.log | wc -l     # 期望 6
+pgrep -c -x qemu-system-x86_64             # 期望 0
+```
+
+上面第 2 个缺陷已经加了回归测试（`ControlChannelTests`）。
+反向验证过：把事件分发改回破坏性单消费者，六项里有两项立刻变红。
+
 ## 诊断能力（排查这些 bug 时加的，值得留着）
 
 `QemuLauncher.DescribeFailure()` 一次性给出：进程是否还在、退出码、
