@@ -292,8 +292,19 @@ if (-not $godotExe -or -not (Test-Path $godotExe)) {
     } else {
         Step 'Godot 工程 C# 编译' $false '跳过：没有 .NET SDK（见第 2 步）'
     }
-    $code = Invoke-Logged $godotExe @('--headless', '--path', $project, '--import') 'godot-import' 300
-    Step 'Godot 资源导入' ($code -eq 0 -or $code -eq -1) "退出码 $code"
+    # 没有 .NET 时 Godot mono 连 --import 都会卡住（报 hostfxr 找不到然后不退出），
+    # 在 Mac 上实测白等满 300 秒；有 SDK 时也挂上同样的失败模式兜底
+    if (-not $dotnet) {
+        Step 'Godot 资源导入' $false '跳过：没有 .NET SDK，Godot mono 找不到 .NET 运行时会卡住'
+    } else {
+        $code = Invoke-Logged $godotExe @('--headless', '--path', $project, '--import') 'godot-import' 300 `
+                    -FailPattern 'Failed to load .NET runtime|hostfxr'
+        if ($code -eq -3) {
+            Step 'Godot 资源导入' $false 'Godot 找不到 .NET 运行时（hostfxr）'
+        } else {
+            Step 'Godot 资源导入' ($code -eq 0) "退出码 $code"
+        }
+    }
 
     # --- 自检 ---
     $report = Join-Path $Out 'selftest.txt'
