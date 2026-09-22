@@ -1,0 +1,98 @@
+[gd_scene load_steps=3 format=3 uid="uid://bghm2main0"]
+
+[ext_resource type="Script" path="res://scripts/Level.cs" id="1_level"]
+[ext_resource type="Script" path="res://scripts/PacketPanel.cs" id="2_packets"]
+
+[node name="Level" type="Control"]
+layout_mode = 3
+anchors_preset = 15
+anchor_right = 1.0
+anchor_bottom = 1.0
+grow_horizontal = 2
+grow_vertical = 2
+script = ExtResource("1_level")
+
+[node name="Layout" type="VBoxContainer" parent="."]
+layout_mode = 1
+anchors_preset = 15
+anchor_right = 1.0
+anchor_bottom = 1.0
+grow_horizontal = 2
+grow_vertical = 2
+offset_left = 8.0
+offset_top = 8.0
+offset_right = -8.0
+offset_bottom = -8.0
+
+[node name="TopBar" type="HBoxContainer" parent="Layout"]
+layout_mode = 2
+theme_override_constants/separation = 16
+
+[node name="Back" type="Button" parent="Layout/TopBar"]
+unique_name_in_owner = true
+layout_mode = 2
+text = "← 返回选关"
+
+[node name="LevelTitle" type="Label" parent="Layout/TopBar"]
+unique_name_in_owner = true
+layout_mode = 2
+theme_override_font_sizes/font_size = 18
+
+[node name="Status" type="Label" parent="Layout/TopBar"]
+unique_name_in_owner = true
+layout_mode = 2
+size_flags_horizontal = 3
+text = "初始化…"
+text_overrun_behavior = 3
+
+[node name="VSplit" type="VSplitContainer" parent="Layout"]
+layout_mode = 2
+size_flags_vertical = 3
+split_offset = 520
+
+[node name="Split" type="HSplitContainer" parent="Layout/VSplit"]
+layout_mode = 2
+size_flags_vertical = 3
+
+[node name="Machines" type="HBoxContainer" parent="Layout/VSplit/Split"]
+unique_name_in_owner = true
+layout_mode = 2
+size_flags_horizontal = 3
+
+[node name="Objectives" type="PanelContainer" parent="Layout/VSplit/Split"]
+custom_minimum_size = Vector2(280, 0)
+layout_mode = 2
+
+[node name="Margin" type="MarginContainer" parent="Layout/VSplit/Split/Objectives"]
+layout_mode = 2
+theme_override_constants/margin_left = 12
+theme_override_constants/margin_top = 10
+theme_override_constants/margin_right = 12
+theme_override_constants/margin_bottom = 10
+
+[node name="VBox" type="VBoxContainer" parent="Layout/VSplit/Split/Objectives/Margin"]
+layout_mode = 2
+theme_override_constants/separation = 8
+
+[node name="Header" type="Label" parent="Layout/VSplit/Split/Objectives/Margin/VBox"]
+layout_mode = 2
+theme_override_font_sizes/font_size = 18
+text = "任务目标"
+
+[node name="Steps" type="VBoxContainer" parent="Layout/VSplit/Split/Objectives/Margin/VBox"]
+unique_name_in_owner = true
+layout_mode = 2
+theme_override_constants/separation = 6
+
+[node name="Hint" type="Label" parent="Layout/VSplit/Split/Objectives/Margin/VBox"]
+unique_name_in_owner = true
+modulate = Color(0.75, 0.85, 1, 1)
+custom_minimum_size = Vector2(256, 0)
+layout_mode = 2
+autowrap_mode = 3
+
+[node name="Packets" type="PanelContainer" parent="Layout/VSplit"]
+unique_name_in_owner = true
+custom_minimum_size = Vector2(0, 200)
+layout_mode = 2
+script = ExtResource("2_packets")

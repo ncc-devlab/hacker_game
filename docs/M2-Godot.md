@@ -10,12 +10,16 @@ ping 通、隐藏控制通道发出「任务完成」。
 src/GameHacker.Godot/
   project.godot            Godot 4.7 + C#
   fetch-addons.sh          取 godot-xterm v4.0.3（三端预编译二进制，不入库）
-  scenes/Main.tscn         状态栏 + 左右两个 Terminal
+  scenes/LevelSelect.tscn  选关界面（主场景）
+  scenes/Level.tscn        关卡：每台机器一个 Terminal + 任务目标 + 抓包面板
+  levels/*.json            关卡定义，见 docs/关卡系统.md
   scripts/
     GamePaths.cs           定位 QEMU 与镜像（它们不能进 .pck）
     TerminalBridge.cs      SerialChannel <-> godot-xterm Terminal
     VmSession.cs           一台客户机的完整会话
-    Main.cs                编排与判定
+    GameState.cs           autoload：关卡目录、进度、当前关卡
+    LevelSelect.cs         选关
+    Level.cs               按关卡定义拉起机器、推进步骤（前身是 M2 的 Main.cs）
 ```
 
 引用方向是**外壳引用 Core**，反过来不行：Core 里一旦出现 Godot 类型，

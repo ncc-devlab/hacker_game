@@ -1,0 +1,105 @@
+[gd_scene load_steps=2 format=3 uid="uid://bghselect0"]
+
+[ext_resource type="Script" path="res://scripts/LevelSelect.cs" id="1_select"]
+
+[node name="LevelSelect" type="Control"]
+layout_mode = 3
+anchors_preset = 15
+anchor_right = 1.0
+anchor_bottom = 1.0
+grow_horizontal = 2
+grow_vertical = 2
+script = ExtResource("1_select")
+
+[node name="Margin" type="MarginContainer" parent="."]
+layout_mode = 1
+anchors_preset = 15
+anchor_right = 1.0
+anchor_bottom = 1.0
+grow_horizontal = 2
+grow_vertical = 2
+theme_override_constants/margin_left = 32
+theme_override_constants/margin_top = 24
+theme_override_constants/margin_right = 32
+theme_override_constants/margin_bottom = 24
+
+[node name="Layout" type="VBoxContainer" parent="Margin"]
+layout_mode = 2
+theme_override_constants/separation = 16
+
+[node name="Header" type="Label" parent="Margin/Layout"]
+layout_mode = 2
+theme_override_font_sizes/font_size = 30
+text = "选择任务"
+
+[node name="Split" type="HSplitContainer" parent="Margin/Layout"]
+layout_mode = 2
+size_flags_vertical = 3
+split_offset = 80
+
+[node name="Levels" type="Tree" parent="Margin/Layout/Split"]
+unique_name_in_owner = true
+custom_minimum_size = Vector2(420, 0)
+layout_mode = 2
+theme_override_font_sizes/font_size = 18
+columns = 2
+hide_root = true
+select_mode = 0
+
+[node name="Detail" type="VBoxContainer" parent="Margin/Layout/Split"]
+layout_mode = 2
+size_flags_horizontal = 3
+theme_override_constants/separation = 12
+
+[node name="Title" type="Label" parent="Margin/Layout/Split/Detail"]
+unique_name_in_owner = true
+layout_mode = 2
+theme_override_font_sizes/font_size = 26
+
+[node name="Meta" type="Label" parent="Margin/Layout/Split/Detail"]
+unique_name_in_owner = true
+modulate = Color(0.7, 0.7, 0.7, 1)
+layout_mode = 2
+
+[node name="Body" type="RichTextLabel" parent="Margin/Layout/Split/Detail"]
+unique_name_in_owner = true
+layout_mode = 2
+size_flags_vertical = 3
+theme_override_font_sizes/normal_font_size = 17
+theme_override_font_sizes/bold_font_size = 17
+bbcode_enabled = true
+selection_enabled = true
+
+[node name="Actions" type="HBoxContainer" parent="Margin/Layout/Split/Detail"]
+layout_mode = 2
+theme_override_constants/separation = 16
+
+[node name="Start" type="Button" parent="Margin/Layout/Split/Detail/Actions"]
+unique_name_in_owner = true
+custom_minimum_size = Vector2(160, 44)
+layout_mode = 2
+theme_override_font_sizes/font_size = 18
+text = "开始任务"
+
+[node name="Reason" type="Label" parent="Margin/Layout/Split/Detail/Actions"]
+unique_name_in_owner = true
+modulate = Color(1, 0.75, 0.4, 1)
+layout_mode = 2
+size_flags_horizontal = 3
+
+[node name="IgnoreLocks" type="CheckBox" parent="Margin/Layout/Split/Detail/Actions"]
+unique_name_in_owner = true
+visible = false
+layout_mode = 2
+text = "无视解锁（编辑器）"
+
+[node name="Reset" type="Button" parent="Margin/Layout/Split/Detail/Actions"]
+unique_name_in_owner = true
+layout_mode = 2
+text = "重置进度"
+
+[node name="Footer" type="Label" parent="Margin/Layout"]
+unique_name_in_owner = true
+modulate = Color(1, 0.55, 0.45, 1)
+layout_mode = 2
+autowrap_mode = 3

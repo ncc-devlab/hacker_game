@@ -28,7 +28,9 @@ public static class GamePaths
     public static string ImagesDir => Path.Combine(Root, "m0", "images");
     public static string Kernel => Path.Combine(ImagesDir, "vmlinuz-virt");
     public static string Initrd => Path.Combine(ImagesDir, "m0-guest.cpio.gz");
-    public static string AlpineDisk => Path.Combine(ImagesDir, "alpine-main.qcow2");
+
+    /// <summary>关卡里 <c>"disk": "alpine-main"</c> 对应的镜像文件。</summary>
+    public static string Disk(string name) => Path.Combine(ImagesDir, name + ".qcow2");
 
     /// <summary>
     /// 本平台的 QEMU，查找顺序见 <see cref="QemuLocator"/>。找不到时抛出的异常

@@ -1,0 +1,23 @@
+{
+  // MVP2 的第一个实战关卡，内容还在设计。步骤先照 MVP2 文档第二节列出，
+  // 检测条件、内网段和内网目标机等关卡内容定下来再补。
+  "id": "jump-scan",
+  "title": "跳板扫描",
+  "track": "mission",
+  "order": 0,
+  "status": "draft",
+  "requires": ["lab-ping"],
+  "summary": "借一台跳板机穿进内网，拿到文件，全身而退。",
+  "briefing": "你拿到了一台跳板机的登录方式。它背后是一段你直接够不着的内网，目标文件就在里面某台机器上。\n\n管理员会不定期登录跳板机查岗。别让他发现你来过。",
+  "machines": [
+    { "name": "ws",     "ip": "10.0.0.1", "persona": "workstation",   "disk": "alpine-main", "memory": 512 },
+    { "name": "jump01", "ip": "10.0.0.2", "persona": "legacy-server" }
+  ],
+  "steps": [
+    { "id": "tunnel",  "title": "建隧道", "hint": "连上跳板机，建立通往内网的隧道。" },
+    { "id": "scan",    "title": "扫描",   "hint": "通过隧道扫描跳板机所在的内网段，找到目标。" },
+    { "id": "fetch",   "title": "拿取",   "hint": "从内网目标取得文件，复制回你的机器。" },
+    { "id": "stealth", "title": "隐蔽",   "hint": "整个过程尽量别引起管理员的注意。" },
+    { "id": "cover",   "title": "掩盖",   "hint": "清理白名单外进程留下的痕迹 —— 只删日志本身就是痕迹。" }
+  ]
+}

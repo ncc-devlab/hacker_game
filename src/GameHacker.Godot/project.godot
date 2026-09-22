@@ -11,9 +11,13 @@ config_version=5
 [application]
 
 config/name="GameHacker"
-config/description="黑客教学游戏 — 技术脊椎验证壳"
-run/main_scene="res://scenes/Main.tscn"
+config/description="黑客教学游戏"
+run/main_scene="res://scenes/LevelSelect.tscn"
 config/features=PackedStringArray("4.7", "C#", "Forward Plus")
+
+[autoload]
+
+GameState="*res://scripts/GameState.cs"
 
 [display]
 

@@ -134,6 +134,12 @@ public sealed record HardwarePersona
     /// <summary>不伪装。M0/M1 的老测试和排查时用。</summary>
     public static HardwarePersona None { get; } = new() { Name = "none" };
 
+    /// <summary>全部预设，关卡文件按 <see cref="Name"/> 引用。</summary>
+    public static IReadOnlyList<HardwarePersona> Presets { get; } = [Workstation, LegacyServer, None];
+
+    public static HardwarePersona? ByName(string name) =>
+        Presets.FirstOrDefault(p => p.Name == name);
+
     /// <summary>
     /// 组装 <c>-smbios</c> / <c>-cpu</c> 参数。
     /// </summary>

@@ -368,7 +368,7 @@ else
         export GAMEHACKER_BOOT_TIMEOUT="$BOOT_TIMEOUT"
         export GAMEHACKER_SELFTEST="$OUT/selftest.txt"
         export GAMEHACKER_PCAP="$OUT/capture.pcap"
-        WATCH='两台客户机就绪'
+        WATCH='台机器就绪'
         T0=$(date +%s)
         run_logged godot-selftest $((BOOT_TIMEOUT + 180)) \
             'Cannot instantiate C# script|Failed to load .NET runtime|hostfxr' \
