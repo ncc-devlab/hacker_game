@@ -1,3 +1,4 @@
+
 namespace GameHacker.Core.Tests;
 
 /// <summary>
@@ -17,23 +18,14 @@ public static class TestImages
     public static string AlpineDisk => Path.Combine(ImagesDir, "alpine-main.qcow2");
 
     /// <summary>
-    /// 用哪个 QEMU：环境变量优先，其次是 M0-e 裁剪出来的那份，最后退回 PATH。
+    /// 用哪个 QEMU：和游戏同一套查找逻辑（<see cref="Qemu.QemuLocator"/>）。
+    /// 找不到时返回裸文件名，让启动报错说清楚。
     /// </summary>
     /// <remarks>
     /// 三端 CI 靠 <c>GAMEHACKER_QEMU</c> 指向各自平台的裁剪版二进制。
     /// </remarks>
-    public static string QemuPath
-    {
-        get
-        {
-            string? fromEnv = Environment.GetEnvironmentVariable("GAMEHACKER_QEMU");
-            if (!string.IsNullOrWhiteSpace(fromEnv)) return fromEnv;
-
-            string trimmed = Path.Combine(RepoRoot, "runtime", "linux-x86_64",
-                                          "bin", "qemu-system-x86_64");
-            return File.Exists(trimmed) ? trimmed : "qemu-system-x86_64";
-        }
-    }
+    public static string QemuPath =>
+        Qemu.QemuLocator.Find(RepoRoot) ?? "qemu-system-x86_64";
 
     public static bool GuestImagesReady => File.Exists(Kernel) && File.Exists(Initrd);
 

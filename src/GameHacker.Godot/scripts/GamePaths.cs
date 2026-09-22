@@ -1,4 +1,5 @@
 using System.IO;
+using GameHacker.Core.Qemu;
 using Godot;
 
 namespace GameHacker.Godot;
@@ -30,31 +31,11 @@ public static class GamePaths
     public static string AlpineDisk => Path.Combine(ImagesDir, "alpine-main.qcow2");
 
     /// <summary>
-    /// 本平台的 QEMU。优先环境变量，其次 M0-e 裁剪出来的那份，最后退回 PATH。
+    /// 本平台的 QEMU，查找顺序见 <see cref="QemuLocator"/>。找不到时抛出的异常
+    /// 会原样显示在状态栏上，所以消息里要写清楚怎么装。
     /// </summary>
-    public static string QemuPath
-    {
-        get
-        {
-            string? fromEnv = System.Environment.GetEnvironmentVariable("GAMEHACKER_QEMU");
-            if (!string.IsNullOrWhiteSpace(fromEnv)) return fromEnv;
-
-            string exe = OS.GetName() switch
-            {
-                "Windows" => "qemu-system-x86_64.exe",
-                _ => "qemu-system-x86_64",
-            };
-            string platform = OS.GetName() switch
-            {
-                "Windows" => "windows-x86_64",
-                "macOS" => "macos-" + (Engine.GetArchitectureName() == "arm64" ? "arm64" : "x86_64"),
-                _ => "linux-x86_64",
-            };
-
-            string bundled = Path.Combine(Root, "runtime", platform, "bin", exe);
-            return File.Exists(bundled) ? bundled : exe;
-        }
-    }
+    public static string QemuPath =>
+        QemuLocator.Find(Root) ?? throw new FileNotFoundException(QemuLocator.NotFoundMessage(Root));
 
     public static bool ImagesReady => File.Exists(Kernel) && File.Exists(Initrd);
 

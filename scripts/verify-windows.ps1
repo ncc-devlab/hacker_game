@@ -206,9 +206,9 @@ $qemuExe = Resolve-Qemu
 if (-not $qemuExe -or -not (Test-Path $qemuExe)) {
     Step 'QEMU 可执行文件' $false '找不到。装 https://qemu.weilnetz.de/w64/ 的官方构建，或用 -Qemu 指定'
 } else {
-    # 游戏侧（GamePaths）只认 runtime\ 下的那份或 PATH 里的名字；
-    # 找到别处的就显式交给它，保证测的就是这里检查过的这一份
-    $env:GAMEHACKER_QEMU = $qemuExe
+    # 只有 -Qemu 显式指定时才交给游戏。其余情况让游戏自己找（QemuLocator 会看
+    # C:\Program Files\qemu），这样自检顺带验证了"双击就能跑"，不需要环境变量
+    if ($Qemu) { $env:GAMEHACKER_QEMU = $qemuExe }
     # 先收全输出再取第一行：管道里直接 Select-Object -First 1 会提前掐断，
     # 5.1 下 $LASTEXITCODE 随之不可信 —— 第一轮报告里版本号都打出来了却判 FAIL
     $verOut = @(& $qemuExe -version 2>&1)
@@ -396,12 +396,14 @@ if (-not $godotExe -or -not (Test-Path $godotExe)) {
 # ---------------------------------------------------------------------------
 Section '7. 残留进程'
 Start-Sleep -Seconds 2
-$orphans = @(Get-Process -Name 'qemu-system*' -ErrorAction SilentlyContinue)
+# 只认本游戏拉起的 qemu（命令行里带我们的 initramfs）；机器上别的虚拟机不算、也不杀
+$orphans = @(Get-CimInstance Win32_Process -Filter "Name LIKE 'qemu-system%'" -ErrorAction SilentlyContinue |
+             Where-Object { $_.CommandLine -match 'm0-guest\.cpio\.gz' })
 # TCG 每台占满一核，孤儿会让下一次启动越跑越慢直至超时 —— M2 里在 Linux 上实测到过
 Step '退出后没有残留 qemu' ($orphans.Count -eq 0) ("{0} 个" -f $orphans.Count)
 if ($orphans.Count -gt 0) {
-    $orphans | Format-Table Id, ProcessName, StartTime -AutoSize | Out-String | Write-Host
-    $orphans | Stop-Process -Force -ErrorAction SilentlyContinue
+    $orphans | Format-Table ProcessId, Name, CreationDate -AutoSize | Out-String | Write-Host
+    foreach ($o in $orphans) { Stop-Process -Id $o.ProcessId -Force -ErrorAction SilentlyContinue }
 }
 
 # ---------------------------------------------------------------------------
