@@ -9,18 +9,21 @@ namespace GameHacker.Core.Net;
 /// </summary>
 public static class PacketInspector
 {
-    /// <summary>这一帧是不是 <paramref name="from"/> 回给 <paramref name="to"/> 的 ICMP echo 应答。</summary>
-    public static bool IsIcmpEchoReply(byte[] frame, IPAddress from, IPAddress to)
+    /// <summary>这一帧是不是 ICMP echo 应答；是的话给出源、目的地址。</summary>
+    public static bool TryGetIcmpEchoReply(byte[] frame, out IPAddress source, out IPAddress destination)
     {
+        source = destination = IPAddress.None;
         try
         {
-            return Packet.ParsePacket(LinkLayers.Ethernet, frame) is EthernetPacket
-            {
-                PayloadPacket: IPv4Packet { PayloadPacket: IcmpV4Packet icmp } ip,
-            }
-            && icmp.TypeCode == IcmpV4TypeCode.EchoReply
-            && ip.SourceAddress.Equals(from)
-            && ip.DestinationAddress.Equals(to);
+            if (Packet.ParsePacket(LinkLayers.Ethernet, frame) is not EthernetPacket
+                {
+                    PayloadPacket: IPv4Packet { PayloadPacket: IcmpV4Packet icmp } ip,
+                }
+                || icmp.TypeCode != IcmpV4TypeCode.EchoReply)
+                return false;
+            source = ip.SourceAddress;
+            destination = ip.DestinationAddress;
+            return true;
         }
         catch (Exception)
         {

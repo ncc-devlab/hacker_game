@@ -84,7 +84,8 @@ public partial class Level : Control
         {
             var pane = new VBoxContainer { SizeFlagsHorizontal = SizeFlags.ExpandFill };
             string product = HardwarePersona.ByName(m.Persona)?.SystemProduct ?? "";
-            pane.AddChild(new Label { Text = $"{m.Name} — {m.Ip}   {product}" });
+            string ips = string.Join(" / ", m.Nics.Select(n => n.Ip));
+            pane.AddChild(new Label { Text = $"{m.Name} — {ips}   {product}" });
 
             // Terminal 是 godot-xterm 的 GDExtension 类，C# 里没有对应类型，只能按类名实例化
             var terminal = ClassDB.Instantiate("Terminal").As<Control>();
@@ -107,17 +108,18 @@ public partial class Level : Control
             if (reaped > 0) GD.Print($"[level] 回收了 {reaped} 个上次残留的虚拟机");
 
             SetStatus("启动虚拟交换机…");
-            // 交换机是概要书里唯一的流量观察点，抓包面板和关卡判定都挂在这个旁观者上
-            _switch = new VirtualSwitch(port: 0, _packetLog);
+            // 交换机是概要书里唯一的流量观察点，抓包面板和关卡判定都挂在这个旁观者上。
+            // 每个网段一个 VLAN，不同网段之间二层不通
+            _switch = new VirtualSwitch(LevelTopology.Vlans(_level), _packetLog);
             _ = _switch.RunAsync();
 
-            SetStatus($"交换机监听 127.0.0.1:{_switch.Port}，正在拉起 {_level.Machines.Count} 台虚拟机…");
+            SetStatus($"交换机开了 {_switch.Vlans.Count} 个 VLAN，正在拉起 {_level.Machines.Count} 台虚拟机…");
 
             // 人设决定客户机对玩家宣称的主板 / BIOS / CPU / 内核版本，已经在加载关卡时校验过
             for (int i = 0; i < _level.Machines.Count; i++)
             {
                 if (_closing) return;
-                _sessions.Add(new VmSession(NewSpec(_level.Machines[i], i, _switch.Port), _terminals[i], this));
+                _sessions.Add(new VmSession(NewSpec(i, _switch), _terminals[i], this));
             }
 
             // 排查间歇性启动问题时用 GAMEHACKER_BOOT_TIMEOUT 缩短等待
@@ -145,22 +147,26 @@ public partial class Level : Control
         }
     }
 
-    private static VmSpec NewSpec(MachineDefinition m, int index, int switchPort) => new()
+    private VmSpec NewSpec(int index, VirtualSwitch vSwitch)
     {
-        Name = m.Name,
-        Persona = HardwarePersona.ByName(m.Persona)!,
-        KernelPath = GamePaths.Kernel,
-        InitrdPath = GamePaths.Initrd,
-        DiskPath = m.Disk is null ? null : GamePaths.Disk(m.Disk),
-        IpAddress = $"{m.Ip}/24",
-        MacAddress = $"52:54:00:00:00:{index + 1:x2}",
-        MemoryMegabytes = m.Memory,
-        // 关卡里不写回镜像，保持基础镜像干净。
-        // 真正的存档走 qcow2 backing file + user:// 下的 overlay。
-        Ephemeral = m.Disk is not null,
-        // 交换机用 bind 0 让系统分配端口，避免多开或并发测试时撞端口
-        SwitchPort = switchPort,
-    };
+        var m = _level.Machines[index];
+        return new VmSpec
+        {
+            Name = m.Name,
+            Persona = HardwarePersona.ByName(m.Persona)!,
+            KernelPath = GamePaths.Kernel,
+            InitrdPath = GamePaths.Initrd,
+            DiskPath = m.Disk is null ? null : GamePaths.Disk(m.Disk),
+            // 网卡连哪个口就进哪个 VLAN；交换机用 bind 0 分配端口，多开或并发测试时不撞
+            Nics = LevelTopology.Nics(_level, index)
+                .Select(n => new VmNic(n.Mac, vSwitch.PortFor(n.Vlan), n.IpWithPrefix))
+                .ToList(),
+            MemoryMegabytes = m.Memory,
+            // 关卡里不写回镜像，保持基础镜像干净。
+            // 真正的存档走 qcow2 backing file + user:// 下的 overlay。
+            Ephemeral = m.Disk is not null,
+        };
+    }
 
     // --- 任务步骤 -----------------------------------------------------------
 
@@ -240,7 +246,7 @@ public partial class Level : Control
         string bootDetail;
         if (_sessions.Count >= 2)
         {
-            await TypeAsync(_sessions[1], $"ping -c2 {_level.Machines[0].Ip}\n");
+            await TypeAsync(_sessions[1], $"ping -c2 {_level.Machines[0].Nics[0].Ip}\n");
             bool done = await Task.WhenAny(_completed.Task, Task.Delay(TimeSpan.FromSeconds(20))) == _completed.Task;
             bootDetail = done
                 ? $"互通，关卡 {_level.Id} 判定完成，交换机已转发 {_switch!.FramesForwarded} 帧"
@@ -285,7 +291,7 @@ public partial class Level : Control
         // 挑的命令要同时展示三样东西：终端渲染、伪装生效、以及抓包面板有货
         await TypeAsync(_sessions[0], "uname -a; cat /sys/class/dmi/id/product_name\n");
         if (_sessions.Count >= 2)
-            await TypeAsync(_sessions[1], $"ping -c2 {_level.Machines[0].Ip}\n");
+            await TypeAsync(_sessions[1], $"ping -c2 {_level.Machines[0].Nics[0].Ip}\n");
         await Task.Delay(4000);
 
         // 截图必须在主线程、且要等当前帧画完

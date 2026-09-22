@@ -25,7 +25,7 @@ public sealed partial class PacketPanel : PanelContainer
     private const int MaxRows = 400;
 
     private static readonly string[] Titles =
-        ["#", "时间", "源", "目的", "协议", "字节", "摘要"];
+        ["#", "时间", "VLAN", "源", "目的", "协议", "字节", "摘要"];
 
     /// <summary>
     /// 各列的最小宽度（像素）。
@@ -34,7 +34,7 @@ public sealed partial class PacketPanel : PanelContainer
     /// 不给的话 Tree 会把所有列均分，MAC 和 IPv6 地址被压成 "52" "ff02:"，
     /// 而摘要列空一大片 —— 实测截图里就是这个样子。
     /// </remarks>
-    private static readonly int[] Widths = [56, 76, 150, 150, 80, 56, 0];
+    private static readonly int[] Widths = [56, 76, 56, 150, 150, 80, 56, 0];
 
     private readonly ConcurrentQueue<PacketRecord> _pending = new();
 
@@ -94,7 +94,7 @@ public sealed partial class PacketPanel : PanelContainer
 
         _filter = new LineEdit
         {
-            PlaceholderText = "过滤：ICMP / 10.0.0.2 / ARP …",
+            PlaceholderText = "过滤：ICMP / 10.0.0.2 / ARP / vlan20 …",
             SizeFlagsHorizontal = SizeFlags.ExpandFill,
         };
         _filter.TextChanged += _ => Rebuild();
@@ -141,6 +141,10 @@ public sealed partial class PacketPanel : PanelContainer
     {
         string needle = _filter.Text.Trim();
         if (needle.Length == 0) return true;
+        // "vlan20" / "vlan 20" 只看某个网段
+        if (needle.StartsWith("vlan", StringComparison.OrdinalIgnoreCase)
+            && int.TryParse(needle[4..].Trim(), out int vlan))
+            return r.Vlan == vlan;
         return r.Protocol.Contains(needle, StringComparison.OrdinalIgnoreCase)
                || r.Source.Contains(needle, StringComparison.OrdinalIgnoreCase)
                || r.Destination.Contains(needle, StringComparison.OrdinalIgnoreCase)
@@ -152,11 +156,12 @@ public sealed partial class PacketPanel : PanelContainer
         var item = _tree.CreateItem(_root);
         item.SetText(0, r.Index.ToString());
         item.SetText(1, $"{r.Elapsed.TotalSeconds:F3}");
-        item.SetText(2, r.Source);
-        item.SetText(3, r.Destination);
-        item.SetText(4, r.Protocol);
-        item.SetText(5, r.Length.ToString());
-        item.SetText(6, r.Summary);
+        item.SetText(2, r.Vlan.ToString());
+        item.SetText(3, r.Source);
+        item.SetText(4, r.Destination);
+        item.SetText(5, r.Protocol);
+        item.SetText(6, r.Length.ToString());
+        item.SetText(7, r.Summary);
 
         // 颜色让玩家一眼分得出握手、寻址和数据
         Color tint = r.Protocol switch

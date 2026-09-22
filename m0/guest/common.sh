@@ -19,6 +19,14 @@ m0_setup_net() {
     ip link set lo up
     ip link set eth0 up 2>/dev/null
     [ -n "$M0_IP" ] && ip addr add "$M0_IP" dev eth0 2>/dev/null
+    # 多网卡（跳板机一脚在外网 VLAN、一脚在内网 VLAN）：m0.ip1 配给 eth1，以此类推。
+    # 宿主侧最多给 4 块网卡（QemuLauncher.MaxNics）
+    for _n in 1 2 3; do
+        _ip="$(m0_cmdline_get m0.ip$_n)"
+        [ -n "$_ip" ] || continue
+        ip link set "eth$_n" up 2>/dev/null
+        ip addr add "$_ip" dev "eth$_n" 2>/dev/null
+    done
     return 0
 }
 

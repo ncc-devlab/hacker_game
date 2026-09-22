@@ -52,6 +52,9 @@ public sealed record LevelDefinition
     /// <summary>要先完成哪些关才解锁。</summary>
     public IReadOnlyList<string> Requires { get; init; } = [];
 
+    /// <summary>网段。每个网段是交换机上的一个 VLAN，不同网段之间二层不通。</summary>
+    public IReadOnlyList<NetworkDefinition> Networks { get; init; } = [];
+
     /// <summary>
     /// 这一关的机器。<b>第一台是玩家自己的机器</b>，它的终端放在最左边，
     /// 自检也在它上面敲键盘。
@@ -62,14 +65,30 @@ public sealed record LevelDefinition
     public IReadOnlyList<LevelStep> Steps { get; init; } = [];
 }
 
+/// <summary>一个网段。</summary>
+public sealed record NetworkDefinition
+{
+    /// <summary>网卡定义里引用它的名字，如 <c>outside</c>、<c>inside</c>。</summary>
+    public required string Name { get; init; }
+
+    /// <summary>交换机上的 VLAN 号，1..4094，同一关里不能重复。</summary>
+    public required int Vlan { get; init; }
+
+    /// <summary>如 <c>10.0.0.0/24</c>。网卡的 IP 必须落在里面，前缀长度也取自这里。</summary>
+    public required string Subnet { get; init; }
+}
+
 /// <summary>关卡里的一台机器。</summary>
 public sealed record MachineDefinition
 {
     /// <summary>主机名，也是检测条件里引用这台机器的名字。</summary>
     public required string Name { get; init; }
 
-    /// <summary>IPv4 地址，不带前缀长度（目前所有机器在同一个 /24）。</summary>
-    public required string Ip { get; init; }
+    /// <summary>
+    /// 网卡，按顺序成为客户机里的 eth0、eth1……。跳板机这类机器插两块，
+    /// 一块在外网、一块在内网。
+    /// </summary>
+    public required IReadOnlyList<NicDefinition> Nics { get; init; }
 
     /// <summary>硬件人设，对应 <see cref="Qemu.HardwarePersona.ByName"/>。</summary>
     public string Persona { get; init; } = "workstation";
@@ -81,6 +100,15 @@ public sealed record MachineDefinition
     public string? Disk { get; init; }
 
     public int Memory { get; init; } = 256;
+}
+
+/// <summary>一块网卡：接在哪个网段、用什么地址。</summary>
+public sealed record NicDefinition
+{
+    public required string Network { get; init; }
+
+    /// <summary>IPv4 地址，不带前缀长度。</summary>
+    public required string Ip { get; init; }
 }
 
 /// <summary>任务里的一步。</summary>
@@ -129,7 +157,10 @@ public sealed record PingCheck : LevelCheck
 
     public override IEnumerable<string> MachineRefs => [From, To];
 
-    public bool Matches(PacketRecord packet, IReadOnlyDictionary<string, IPAddress> ipOf) =>
+    /// <param name="ipsOf">每台机器的全部地址（多网卡的机器有好几个）。</param>
+    public bool Matches(PacketRecord packet, IReadOnlyDictionary<string, IPAddress[]> ipsOf) =>
         packet.Protocol == "ICMP"
-        && PacketInspector.IsIcmpEchoReply(packet.Bytes, from: ipOf[To], to: ipOf[From]);
+        && PacketInspector.TryGetIcmpEchoReply(packet.Bytes, out var source, out var destination)
+        && ipsOf[To].Contains(source)
+        && ipsOf[From].Contains(destination);
 }

@@ -15,14 +15,12 @@ public sealed record VmSpec
     /// <summary>可写磁盘（qcow2）。为空时客户机纯内存运行，不 switch_root。</summary>
     public string? DiskPath { get; init; }
 
-    /// <summary>形如 10.0.0.1/24，经内核 cmdline 传给客户机 init。</summary>
-    public string? IpAddress { get; init; }
-
     public int MemoryMegabytes { get; init; } = 256;
-    public string MacAddress { get; init; } = "52:54:00:00:00:01";
 
-    /// <summary>虚拟交换机的监听端口。客户机作为客户端连进去。</summary>
-    public required int SwitchPort { get; init; }
+    /// <summary>
+    /// 网卡，按顺序在客户机里成为 eth0、eth1……。每块接交换机上一个 VLAN 的监听口。
+    /// </summary>
+    public required IReadOnlyList<VmNic> Nics { get; init; }
 
     /// <summary>
     /// 只读基础镜像 + 每存档一份 overlay 的用法下，这里传 overlay 路径。
@@ -39,6 +37,12 @@ public sealed record VmSpec
     /// </remarks>
     public HardwarePersona Persona { get; init; } = HardwarePersona.None;
 }
+
+/// <summary>一块网卡。</summary>
+/// <param name="Mac">形如 52:54:00:00:01:00。</param>
+/// <param name="SwitchPort">要连的交换机监听口，决定这块网卡在哪个 VLAN。</param>
+/// <param name="IpAddress">形如 10.0.0.1/24，经内核 cmdline 传给客户机 init；为空则不配地址。</param>
+public sealed record VmNic(string Mac, int SwitchPort, string? IpAddress = null);
 
 /// <summary>
 /// 按 <see cref="VmSpec"/> 拉起一个 QEMU 进程，并把三条通道接好。
@@ -60,6 +64,9 @@ public sealed record VmSpec
 /// </remarks>
 public sealed class QemuLauncher : IAsyncDisposable, IDisposable
 {
+    /// <summary>一台机器最多几块网卡。客户机 init 只认到 eth3。</summary>
+    public const int MaxNics = 4;
+
     private readonly string _qemuPath;
     private readonly string _trackingDirectory;
     private readonly StringBuilder _stderr = new();
@@ -105,7 +112,11 @@ public sealed class QemuLauncher : IAsyncDisposable, IDisposable
         // 镜像是 mke2fs 直接造的整盘文件系统、没有分区表，所以根设备是 /dev/vda。
         // AHCI 而不是 virtio-blk：virtio 盘挂出来叫 /dev/vda，一眼就是虚拟机。
         string rootArg = spec.DiskPath is null ? "" : " m0.root=/dev/sda";
-        string ipArg = spec.IpAddress is null ? "" : $" m0.ip={spec.IpAddress}";
+        if (spec.Nics.Count is < 1 or > MaxNics)
+            throw new ArgumentException($"网卡数要在 1..{MaxNics}，实际 {spec.Nics.Count}", nameof(spec));
+        // eth0 沿用 m0.ip（m0/probe 的 Python 脚本也在用），eth1 起是 m0.ip1、m0.ip2……
+        string ipArg = string.Concat(spec.Nics.Select((n, i) =>
+            n.IpAddress is null ? "" : $" m0.ip{(i == 0 ? "" : i.ToString())}={n.IpAddress}"));
         string personaArg = spec.Persona.KernelCmdlineFragment();
 
         var args = new List<string>
@@ -120,15 +131,23 @@ public sealed class QemuLauncher : IAsyncDisposable, IDisposable
                        + $"m0.host={spec.Name}{ipArg}{rootArg}{personaArg}",
             "-chardev", chardev("con", consolePort), "-serial", "chardev:con",
             "-chardev", chardev("ctl", controlPort), "-serial", "chardev:ctl",
-            "-netdev", $"stream,id=n0,addr.type=inet,addr.host=127.0.0.1," +
-                       $"addr.port={spec.SwitchPort},server=off,reconnect-ms=1000",
+            "-qmp", $"tcp:127.0.0.1:{qmpPort},server=on,wait=off",
+        };
+
+        for (int i = 0; i < spec.Nics.Count; i++)
+        {
+            var nic = spec.Nics[i];
+            args.Add("-netdev");
+            args.Add($"stream,id=n{i},addr.type=inet,addr.host=127.0.0.1," +
+                     $"addr.port={nic.SwitchPort},server=off,reconnect-ms=1000");
             // Intel 82574L 而不是 virtio-net：virtio 的 PCI ID 是 0x1af4（Red Hat），
             // 客户机里 lspci / /sys/class/net/eth0/device/vendor 直接就穿帮了。
             // romfile= 关掉 PXE 引导 ROM：我们永远不网络引导，
-            // 留着就得多发一个 efi-e1000e.rom，还白占客户机内存
-            "-device", $"e1000e,netdev=n0,romfile=,mac={spec.MacAddress}",
-            "-qmp", $"tcp:127.0.0.1:{qmpPort},server=on,wait=off",
-        };
+            // 留着就得多发一个 efi-e1000e.rom，还白占客户机内存。
+            // 按顺序添加，PCI 槽位依次递增，客户机里的 eth 编号就和这里的顺序一致
+            args.Add("-device");
+            args.Add($"e1000e,netdev=n{i},romfile=,mac={nic.Mac}");
+        }
 
         // 伪装：主板 / BIOS / CPU 型号。全是 QEMU 原生参数，不需要魔改。
         args.AddRange(spec.Persona.QemuArguments());

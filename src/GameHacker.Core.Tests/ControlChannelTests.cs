@@ -93,6 +93,17 @@ public class ControlChannelTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task 事件前面粘着命令回显也能解析()
+    {
+        // 客户机切 raw -echo 之前收到的命令会被 tty 回显，回显没换行就和 ready 挤在一行。
+        // 跳板关三台机器并排启动时实测撞到过，两台卡在「等 ready 超时」
+        await GuestSendAsync("""resize {"ev":"ready","host":"echoed"}""");
+
+        var ready = await _control.WaitReadyAsync(Timeout);
+        Assert.Equal("echoed", ready["host"]!.GetValue<string>());
+    }
+
+    [Fact]
     public async Task 一行被拆成多次写入也能拼回来()
     {
         // TCP 是字节流，一行 JSON 完全可能分两次到达

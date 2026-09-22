@@ -1,6 +1,7 @@
 {
-  // MVP2 的第一个实战关卡，内容还在设计。步骤先照 MVP2 文档第二节列出，
-  // 检测条件、内网段和内网目标机等关卡内容定下来再补。
+  // MVP2 的第一个实战关卡，内容还在设计。步骤先照 MVP2 文档第二节列出，检测条件待补。
+  // 网络：ws 只在外网，files01 只在内网，jump01 两边各一块网卡 —— 交换机按 VLAN 隔开，
+  // 玩家的机器物理上够不着内网，只能经跳板机过去。
   "id": "jump-scan",
   "title": "跳板扫描",
   "track": "mission",
@@ -9,9 +10,15 @@
   "requires": ["lab-ping"],
   "summary": "借一台跳板机穿进内网，拿到文件，全身而退。",
   "briefing": "你拿到了一台跳板机的登录方式。它背后是一段你直接够不着的内网，目标文件就在里面某台机器上。\n\n管理员会不定期登录跳板机查岗。别让他发现你来过。",
+  "networks": [
+    { "name": "outside", "vlan": 10, "subnet": "10.0.0.0/24" },
+    { "name": "inside",  "vlan": 20, "subnet": "172.16.5.0/24" }
+  ],
   "machines": [
-    { "name": "ws",     "ip": "10.0.0.1", "persona": "workstation",   "disk": "alpine-main", "memory": 512 },
-    { "name": "jump01", "ip": "10.0.0.2", "persona": "legacy-server" }
+    { "name": "ws",      "nics": [ { "network": "outside", "ip": "10.0.0.1" } ], "persona": "workstation", "disk": "alpine-main", "memory": 512 },
+    { "name": "jump01",  "nics": [ { "network": "outside", "ip": "10.0.0.2" },
+                                   { "network": "inside",  "ip": "172.16.5.1" } ], "persona": "legacy-server" },
+    { "name": "files01", "nics": [ { "network": "inside",  "ip": "172.16.5.20" } ], "persona": "legacy-server" }
   ],
   "steps": [
     { "id": "tunnel",  "title": "建隧道", "hint": "连上跳板机，建立通往内网的隧道。" },

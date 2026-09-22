@@ -15,13 +15,13 @@ namespace GameHacker.Core.Levels;
 public sealed class LevelRun
 {
     private readonly object _gate = new();
-    private readonly Dictionary<string, IPAddress> _ipOf;
+    private readonly Dictionary<string, IPAddress[]> _ipsOf;
     private int _index;
 
     public LevelRun(LevelDefinition level)
     {
         Level = level;
-        _ipOf = level.Machines.ToDictionary(m => m.Name, m => IPAddress.Parse(m.Ip));
+        _ipsOf = level.Machines.ToDictionary(m => m.Name, m => m.Nics.Select(n => IPAddress.Parse(n.Ip)).ToArray());
     }
 
     public LevelDefinition Level { get; }
@@ -50,7 +50,7 @@ public sealed class LevelRun
             var step = Level.Steps[_index];
             bool hit = step.Check switch
             {
-                PingCheck ping => ping.Matches(packet, _ipOf),
+                PingCheck ping => ping.Matches(packet, _ipsOf),
                 _ => false,
             };
             if (!hit) return;

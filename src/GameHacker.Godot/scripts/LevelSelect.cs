@@ -181,6 +181,14 @@ public partial class LevelSelect : Control
             sb.Append('\n');
         }
 
+        if (level.Networks.Count > 1)
+        {
+            sb.Append("[b]网段[/b]\n");
+            foreach (var n in level.Networks)
+                sb.Append($"  [code]{n.Name,-8} {n.Subnet,-16}[/code] VLAN {n.Vlan}\n");
+            sb.Append('\n');
+        }
+
         if (level.Machines.Count > 0)
         {
             sb.Append("[b]涉及的机器[/b]\n");
@@ -189,7 +197,8 @@ public partial class LevelSelect : Control
                 var m = level.Machines[i];
                 string product = HardwarePersona.ByName(m.Persona)?.SystemProduct ?? "";
                 string who = i == 0 ? "（你的机器）" : "";
-                sb.Append($"  [code]{m.Name,-8} {m.Ip,-12}[/code] {Escape(product)} {who}\n");
+                string ips = string.Join(" / ", m.Nics.Select(n => n.Ip));
+                sb.Append($"  [code]{m.Name,-8} {ips,-24}[/code] {Escape(product)} {who}\n");
             }
             sb.Append('\n');
         }

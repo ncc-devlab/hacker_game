@@ -14,9 +14,10 @@ public class LevelCatalogTests
     private const string Lab = """
         {
           "id": "lab", "title": "实验场", "track": "tutorial",
+          "networks": [ { "name": "lan", "vlan": 1, "subnet": "10.0.0.0/24" } ],
           "machines": [
-            { "name": "a", "ip": "10.0.0.1" },
-            { "name": "b", "ip": "10.0.0.2", "persona": "legacy-server" }
+            { "name": "a", "nics": [ { "network": "lan", "ip": "10.0.0.1" } ] },
+            { "name": "b", "nics": [ { "network": "lan", "ip": "10.0.0.2" } ], "persona": "legacy-server" }
           ],
           "steps": [ { "id": "s", "title": "通", "check": { "type": "ping", "from": "b", "to": "a" } } ]
         }
@@ -77,7 +78,8 @@ public class LevelCatalogTests
     {
         string noCheck = """
             { "id": "x", "title": "x", "track": "mission",
-              "machines": [ { "name": "a", "ip": "10.0.0.1" } ],
+              "networks": [ { "name": "lan", "vlan": 1, "subnet": "10.0.0.0/24" } ],
+              "machines": [ { "name": "a", "nics": [ { "network": "lan", "ip": "10.0.0.1" } ] } ],
               "steps": [ { "id": "s", "title": "待定" } ] }
             """;
         Assert.Contains("没有 check", Rejects(noCheck).Message);
@@ -89,8 +91,9 @@ public class LevelCatalogTests
     {
         string bad = """
             { "id": "Bad_Id", "title": "x", "track": "mission",
-              "machines": [ { "name": "a", "ip": "10.0.0.300", "persona": "mainframe" },
-                            { "name": "a", "ip": "10.0.0.2" } ],
+              "networks": [ { "name": "lan", "vlan": 1, "subnet": "10.0.0.0/24" } ],
+              "machines": [ { "name": "a", "nics": [ { "network": "lan", "ip": "10.0.0.300" } ], "persona": "mainframe" },
+                            { "name": "a", "nics": [ { "network": "lan", "ip": "10.0.0.2" } ] } ],
               "steps": [ { "id": "s", "title": "x", "check": { "type": "ping", "from": "a", "to": "a" } } ] }
             """;
         var ex = Rejects(bad);
@@ -132,5 +135,77 @@ public class LevelCatalogTests
                      catalog.Levels.Select(l => l.Id).Order(StringComparer.Ordinal));
         // 新存档至少有一关能进
         Assert.Contains(catalog.Levels, l => l.Status == LevelStatus.Playable && l.Requires.Count == 0);
+    }
+}
+
+/// <summary>网段与网卡的校验。跳板关的「够不着内网」全靠这套配置不出错。</summary>
+public class LevelNetworkTests
+{
+    private static string Level(string networks, string machines) => $$"""
+        { "id": "n", "title": "n", "track": "mission", "status": "draft",
+          "networks": [ {{networks}} ],
+          "machines": [ {{machines}} ] }
+        """;
+
+    private const string TwoNets = """
+        { "name": "outside", "vlan": 10, "subnet": "10.0.0.0/24" },
+        { "name": "inside",  "vlan": 20, "subnet": "172.16.5.0/24" }
+        """;
+
+    private static LevelFormatException Rejects(string json) =>
+        Assert.Throws<LevelFormatException>(() => LevelCatalog.Parse([("n.json", json)]));
+
+    [Fact]
+    public void 跳板机两块网卡分别进两个_VLAN()
+    {
+        var level = LevelCatalog.Parse([("n.json", Level(TwoNets, """
+            { "name": "ws",     "nics": [ { "network": "outside", "ip": "10.0.0.1" } ] },
+            { "name": "jump01", "nics": [ { "network": "outside", "ip": "10.0.0.2" },
+                                          { "network": "inside",  "ip": "172.16.5.1" } ] }
+            """))]).Levels[0];
+
+        Assert.Equal([10, 20], LevelTopology.Vlans(level));
+        var nics = LevelTopology.Nics(level, 1);
+        Assert.Equal([10, 20], nics.Select(n => n.Vlan));
+        Assert.Equal(["10.0.0.2/24", "172.16.5.1/24"], nics.Select(n => n.IpWithPrefix));
+        Assert.Equal(["52:54:00:00:02:00", "52:54:00:00:02:01"], nics.Select(n => n.Mac));
+        Assert.Equal("52:54:00:00:01:00", LevelTopology.Nics(level, 0)[0].Mac);
+    }
+
+    [Fact]
+    public void 地址不在所接网段里被拒绝()
+    {
+        // 最容易犯的错：内网机器抄了外网的地址。客户机照样能起来，只是永远 ping 不通
+        var ex = Rejects(Level(TwoNets, """{ "name": "f", "nics": [ { "network": "inside", "ip": "10.0.0.20" } ] }"""));
+        Assert.Contains("不在网段 inside", ex.Message);
+    }
+
+    [Fact]
+    public void 网段本身的各种错误被拒绝()
+    {
+        var ex = Rejects(Level("""
+            { "name": "a", "vlan": 10, "subnet": "10.0.0.1/24" },
+            { "name": "b", "vlan": 10, "subnet": "10.0.1.0/24" },
+            { "name": "c", "vlan": 5000, "subnet": "10.0.2.0/24" }
+            """, """{ "name": "m", "nics": [ { "network": "b", "ip": "10.0.1.1" } ] }"""));
+        Assert.Contains(ex.Errors, e => e.Contains("10.0.0.1/24"));     // 主机位不为零
+        Assert.Contains(ex.Errors, e => e.Contains("VLAN 10 重复"));
+        Assert.Contains(ex.Errors, e => e.Contains("5000"));
+    }
+
+    [Fact]
+    public void 网卡配置错误被拒绝()
+    {
+        var ex = Rejects(Level(TwoNets, """
+            { "name": "a", "nics": [ { "network": "dmz", "ip": "10.0.0.1" } ] },
+            { "name": "b", "nics": [ { "network": "outside", "ip": "10.0.0.2" },
+                                     { "network": "outside", "ip": "10.0.0.3" } ] },
+            { "name": "c", "nics": [ { "network": "inside", "ip": "172.16.5.255" } ] },
+            { "name": "d", "nics": [] }
+            """));
+        Assert.Contains(ex.Errors, e => e.Contains("\"dmz\" 不存在"));
+        Assert.Contains(ex.Errors, e => e.Contains("两块网卡接在同一个网段"));
+        Assert.Contains(ex.Errors, e => e.Contains("广播地址"));
+        Assert.Contains(ex.Errors, e => e.Contains("0 块网卡"));
     }
 }

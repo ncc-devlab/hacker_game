@@ -92,10 +92,14 @@ public sealed class ControlChannel : IAsyncDisposable
                 if (_seenLines.Count < HistoryLimit) _seenLines.Add(line);
             }
 
-            // 串口上混着开机噪声和命令回显，解析不出 JSON 的行直接忽略
+            // 串口上混着开机噪声和命令回显，解析不出 JSON 的行直接忽略。
+            // 事件前面可能粘着一段回显（客户机切 raw 之前收到的命令会被 tty 回显，
+            // 实测见过 "resize {"ev":"ready",...}"），所以从第一个 { 开始解析
+            int brace = line.IndexOf('{');
+            if (brace < 0) continue;
             try
             {
-                if (JsonNode.Parse(line) is JsonObject ev) Publish(ev);
+                if (JsonNode.Parse(line[brace..]) is JsonObject ev) Publish(ev);
             }
             catch (JsonException) { }
         }

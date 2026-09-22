@@ -29,6 +29,10 @@ public sealed partial class TerminalBridge : Node
     private ControlChannel? _control;
     private Vector2I _lastSize = Vector2I.Zero;
 
+    /// <summary>客户机 ready 之前攒着的最新尺寸，ready 后补发一次。只在主线程读写。</summary>
+    private Vector2I _pendingSize = Vector2I.Zero;
+    private bool _guestReady;
+
     /// <summary>终端尺寸变化时会经控制通道下发 resize，这里报告结果。</summary>
     public event Action<int, int>? Resized;
 
@@ -41,6 +45,28 @@ public sealed partial class TerminalBridge : Node
         _serial.DataReceived += OnSerialData;
         _terminal.Connect("data_sent", Callable.From<byte[]>(OnTerminalData));
         _terminal.Connect("size_changed", Callable.From<Vector2I>(OnTerminalResized));
+
+        if (_control is not null) _ = FlushResizeWhenReadyAsync(_control);
+    }
+
+    /// <summary>
+    /// 客户机 ready 之后把攒着的尺寸发出去。
+    /// </summary>
+    /// <remarks>
+    /// ready 之前 ttyS1 还没切成 raw -echo，这时发的 resize 会被客户机的 tty 原样回显，
+    /// 回显和 ready 信标挤在同一行，ready 就解析不出来了 —— 跳板关三台机器并排、
+    /// 布局期间终端尺寸多变了几次，实测三台里两台卡在「等 ready 超时」。
+    /// </remarks>
+    private async System.Threading.Tasks.Task FlushResizeWhenReadyAsync(ControlChannel control)
+    {
+        try { await control.WaitReadyAsync(TimeSpan.FromMinutes(10)); }
+        catch (Exception) { return; }   // 起不来的话启动流程自己会报错
+        Callable.From(() =>
+        {
+            if (!IsInstanceValid(this)) return;
+            _guestReady = true;
+            if (_pendingSize != Vector2I.Zero) OnTerminalResized(_pendingSize);
+        }).CallDeferred();
     }
 
     /// <summary>后台线程：只入队，不碰任何 Node。</summary>
@@ -65,9 +91,9 @@ public sealed partial class TerminalBridge : Node
     {
         // headless 下没有布局，Terminal 会报出 rows=0 这样的尺寸。
         // 把它下发给客户机会让 stty 设出一个 0 行的终端，
-        // 而且那条 resize 的等待者会抢在 ready 之前占住控制通道。
         if (size.X <= 0 || size.Y <= 0) return;
         if (size == _lastSize || _control is null) return;
+        if (!_guestReady) { _pendingSize = size; return; }
         _lastSize = size;
 
         // 裸串口不是 PTY，没有 TIOCSWINSZ 带外信令，

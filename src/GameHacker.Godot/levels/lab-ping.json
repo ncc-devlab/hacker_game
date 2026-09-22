@@ -6,9 +6,12 @@
   "order": 0,
   "summary": "两台机器接上同一台交换机，互相 ping 通。",
   "briefing": "web01 是你的工作站，backup 是机房角落里的一台老服务器。它们接在同一台交换机上，IP 已经配好。\n\n确认两台机器之间网络是通的。可以在任意一边的终端里敲 ping，看看下方的抓包面板里出现了什么。",
+  "networks": [
+    { "name": "lan", "vlan": 1, "subnet": "10.0.0.0/24" }
+  ],
   "machines": [
-    { "name": "web01",  "ip": "10.0.0.1", "persona": "workstation",   "disk": "alpine-main", "memory": 512 },
-    { "name": "backup", "ip": "10.0.0.2", "persona": "legacy-server" }
+    { "name": "web01",  "nics": [ { "network": "lan", "ip": "10.0.0.1" } ], "persona": "workstation", "disk": "alpine-main", "memory": 512 },
+    { "name": "backup", "nics": [ { "network": "lan", "ip": "10.0.0.2" } ], "persona": "legacy-server" }
   ],
   "steps": [
     {

@@ -8,6 +8,7 @@ namespace GameHacker.Core.Net;
 /// <param name="Index">全局序号，从 1 开始。</param>
 /// <param name="Elapsed">相对交换机启动的时刻。</param>
 /// <param name="SourcePort">从哪个端口进来的。</param>
+/// <param name="Vlan">所在 VLAN。</param>
 /// <param name="Protocol">给玩家看的协议名（ARP / ICMP / TCP / UDP / 0x8100 …）。</param>
 /// <param name="Summary">一行摘要，仿 Wireshark 的 Info 列。</param>
 /// <param name="Bytes">原始帧，导出 pcap 时要用。</param>
@@ -15,6 +16,7 @@ public sealed record PacketRecord(
     long Index,
     TimeSpan Elapsed,
     int SourcePort,
+    int Vlan,
     string Source,
     string Destination,
     string Protocol,
@@ -53,7 +55,7 @@ public sealed class PacketLog : IFrameObserver
     /// <summary>累计抓到多少帧（含已经被环形缓冲挤掉的）。</summary>
     public long Total { get { lock (_gate) return _index; } }
 
-    public void OnFrame(int sourcePortId, ReadOnlySpan<byte> frame)
+    public void OnFrame(int sourcePortId, int vlan, ReadOnlySpan<byte> frame)
     {
         // 必须拷贝：ReadOnlySpan 指向交换机的复用缓冲区，出了这个方法就失效了
         byte[] bytes = frame.ToArray();
@@ -61,7 +63,7 @@ public sealed class PacketLog : IFrameObserver
         PacketRecord record;
         lock (_gate)
         {
-            record = Describe(++_index, DateTime.UtcNow - _startUtc, sourcePortId, bytes);
+            record = Describe(++_index, DateTime.UtcNow - _startUtc, sourcePortId, vlan, bytes);
             _records.Enqueue(record);
             while (_records.Count > _capacity) _records.Dequeue();
         }
@@ -81,7 +83,7 @@ public sealed class PacketLog : IFrameObserver
 
     // --- 解析 ---------------------------------------------------------------
 
-    private static PacketRecord Describe(long index, TimeSpan elapsed, int port, byte[] bytes)
+    private static PacketRecord Describe(long index, TimeSpan elapsed, int port, int vlan, byte[] bytes)
     {
         string src = "?", dst = "?", proto = "?", info = "";
         try
@@ -118,7 +120,7 @@ public sealed class PacketLog : IFrameObserver
             info = ex.GetType().Name;
         }
 
-        return new PacketRecord(index, elapsed, port, src, dst, proto, info, bytes);
+        return new PacketRecord(index, elapsed, port, vlan, src, dst, proto, info, bytes);
     }
 
     private static (string Protocol, string Info) DescribeIp(IPPacket ip) => ip.PayloadPacket switch
@@ -186,6 +188,8 @@ public sealed class PacketLog : IFrameObserver
         stream.Write(header);
 
         Span<byte> entry = stackalloc byte[16];
+        Span<byte> tag = stackalloc byte[4];
+        BinaryPrimitives.WriteUInt16BigEndian(tag[..2], 0x8100);
         foreach (var record in records)
         {
             DateTime stamp = _startUtc + record.Elapsed;
@@ -193,10 +197,19 @@ public sealed class PacketLog : IFrameObserver
             BinaryPrimitives.WriteUInt32LittleEndian(entry[..4], (uint)unix);
             BinaryPrimitives.WriteUInt32LittleEndian(entry[4..8], (uint)(record.Elapsed.Microseconds
                                                                         + record.Elapsed.Milliseconds * 1000));
-            BinaryPrimitives.WriteUInt32LittleEndian(entry[8..12], (uint)record.Bytes.Length);
-            BinaryPrimitives.WriteUInt32LittleEndian(entry[12..16], (uint)record.Bytes.Length);
+            // 客户机收发的是不带标签的帧；写 pcap 时补上 802.1Q 标签，
+            // Wireshark 里就能按 vlan.id 过滤，看出每一帧在哪个网段。
+            // 不足一个帧头的畸形帧原样写，没地方插标签
+            bool tagged = record.Bytes.Length >= EthernetFrame.HeaderSize;
+            int length = record.Bytes.Length + (tagged ? tag.Length : 0);
+            BinaryPrimitives.WriteUInt32LittleEndian(entry[8..12], (uint)length);
+            BinaryPrimitives.WriteUInt32LittleEndian(entry[12..16], (uint)length);
             stream.Write(entry);
-            stream.Write(record.Bytes);
+            if (!tagged) { stream.Write(record.Bytes); continue; }
+            BinaryPrimitives.WriteUInt16BigEndian(tag[2..], (ushort)(record.Vlan & 0x0FFF));
+            stream.Write(record.Bytes.AsSpan(0, 12));
+            stream.Write(tag);
+            stream.Write(record.Bytes.AsSpan(12));
         }
     }
 }

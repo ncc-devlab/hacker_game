@@ -21,7 +21,7 @@ public class PacketLogTests
         var log = new PacketLog();
         var arp = new ArpPacket(ArpOperation.Request, PhysicalAddress.Parse("00-00-00-00-00-00"),
                                 IpA, MacB, IpB);
-        log.OnFrame(0, Wrap(arp, EthernetType.Arp).Bytes);
+        log.OnFrame(0, 1, Wrap(arp, EthernetType.Arp).Bytes);
 
         var record = log.Snapshot().Single();
         Assert.Equal("ARP", record.Protocol);
@@ -40,7 +40,7 @@ public class PacketLogTests
             Sequence = 3,
         };
         var ip = new IPv4Packet(IpB, IpA) { Protocol = ProtocolType.Icmp, PayloadPacket = icmp };
-        log.OnFrame(1, Wrap(ip, EthernetType.IPv4).Bytes);
+        log.OnFrame(1, 1, Wrap(ip, EthernetType.IPv4).Bytes);
 
         var record = log.Snapshot().Single();
         Assert.Equal("ICMP", record.Protocol);
@@ -59,7 +59,7 @@ public class PacketLogTests
         var arp = new ArpPacket(ArpOperation.Response,
                                 targetHardwareAddress: MacA, targetProtocolAddress: IpA,
                                 senderHardwareAddress: MacB, senderProtocolAddress: IpB);
-        log.OnFrame(0, Wrap(arp, EthernetType.Arp).Bytes);
+        log.OnFrame(0, 1, Wrap(arp, EthernetType.Arp).Bytes);
 
         var record = log.Snapshot().Single();
         Assert.Equal("52:54:00:00:00:02", record.Source);          // 以太网头的源 MAC
@@ -71,7 +71,7 @@ public class PacketLogTests
     {
         // 转发线程上抛异常会掀掉整台交换机，而畸形帧是玩家随手就能造出来的
         var log = new PacketLog();
-        log.OnFrame(0, new byte[] { 1, 2, 3 });
+        log.OnFrame(0, 1, new byte[] { 1, 2, 3 });
 
         Assert.Equal("畸形", log.Snapshot().Single().Protocol);
     }
@@ -81,7 +81,7 @@ public class PacketLogTests
     {
         var log = new PacketLog(capacity: 3);
         for (int i = 0; i < 10; i++)
-            log.OnFrame(0, Wrap(new ArpPacket(ArpOperation.Request,
+            log.OnFrame(0, 1, Wrap(new ArpPacket(ArpOperation.Request,
                 MacA, IpA, MacB, IpB), EthernetType.Arp).Bytes);
 
         Assert.Equal(3, log.Snapshot().Count);
@@ -93,8 +93,8 @@ public class PacketLogTests
     public void 导出的_pcap_带正确的魔数与链路类型()
     {
         var log = new PacketLog();
-        log.OnFrame(0, Wrap(new ArpPacket(ArpOperation.Request, MacA, IpA, MacB, IpB),
-                            EthernetType.Arp).Bytes);
+        log.OnFrame(0, 20, Wrap(new ArpPacket(ArpOperation.Request, MacA, IpA, MacB, IpB),
+                             EthernetType.Arp).Bytes);
 
         string path = Path.Combine(Path.GetTempPath(), Path.GetRandomFileName() + ".pcap");
         try
@@ -105,8 +105,11 @@ public class PacketLogTests
             Assert.Equal(0xD4, bytes[0]);                       // 小端魔数 a1b2c3d4
             Assert.Equal(0xC3, bytes[1]);
             Assert.Equal(1u, BitConverter.ToUInt32(bytes, 20));  // LINKTYPE_ETHERNET
-            // 24 字节全局头 + 16 字节记录头 + 帧本身
-            Assert.Equal(24 + 16 + log.Snapshot()[0].Length, bytes.Length);
+            // 24 字节全局头 + 16 字节记录头 + 帧本身 + 补进去的 4 字节 802.1Q 标签
+            Assert.Equal(24 + 16 + log.Snapshot()[0].Length + 4, bytes.Length);
+            // 标签插在两个 MAC 之后：TPID 0x8100，VLAN 20，后面才是原来的 EtherType（ARP）
+            int tag = 24 + 16 + 12;
+            Assert.Equal([0x81, 0x00, 0x00, 20, 0x08, 0x06], bytes[tag..(tag + 6)]);
         }
         finally
         {

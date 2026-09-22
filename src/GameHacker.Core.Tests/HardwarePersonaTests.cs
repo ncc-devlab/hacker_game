@@ -71,7 +71,7 @@ public class HardwarePersonaTests
             KernelPath = "/k",
             InitrdPath = "/i",
             DiskPath = "/d.qcow2",
-            SwitchPort = 1234,
+            Nics = [new VmNic("52:54:00:00:01:00", 1234)],
             Persona = HardwarePersona.Workstation,
         };
 

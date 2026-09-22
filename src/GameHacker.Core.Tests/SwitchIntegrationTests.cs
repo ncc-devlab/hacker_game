@@ -66,6 +66,72 @@ public class SwitchIntegrationTests
     }
 
     [SkippableFact]
+    public async Task 跳板拓扑_两块网卡各进一个_VLAN_外网够不着内网()
+    {
+        Skip.IfNot(TestImages.GuestImagesReady, TestImages.MissingImagesReason);
+
+        const int Outside = 10, Inside = 20;
+        await using var vSwitch = new VirtualSwitch([Outside, Inside]);
+        using var cts = new CancellationTokenSource(TimeSpan.FromMinutes(3));
+        _ = vSwitch.RunAsync(cts.Token);
+        int outside = vSwitch.PortFor(Outside), inside = vSwitch.PortFor(Inside);
+
+        // ws 在外网；jump01 两脚各一；files01 在内网。
+        // intruder 是对照组：地址和外网同网段，但插在内网 VLAN 上 ——
+        // ws ping 不通它，才能说明挡住流量的是 VLAN 而不是路由
+        var machines = new (string Name, VmNic[] Nics)[]
+        {
+            ("ws",       [new("52:54:00:00:01:00", outside, "10.0.0.1/24")]),
+            ("jump01",   [new("52:54:00:00:02:00", outside, "10.0.0.2/24"),
+                          new("52:54:00:00:02:01", inside,  "172.16.5.1/24")]),
+            ("files01",  [new("52:54:00:00:03:00", inside,  "172.16.5.20/24")]),
+            ("intruder", [new("52:54:00:00:04:00", inside,  "10.0.0.9/24")]),
+        };
+
+        var launchers = new List<QemuLauncher>();
+        var controls = new Dictionary<string, ControlChannel>();
+        var runs = new List<Task>();
+        try
+        {
+            foreach (var (name, nics) in machines)
+            {
+                var vm = new QemuLauncher(TestImages.QemuPath);
+                launchers.Add(vm);
+                vm.Start(new VmSpec
+                {
+                    Name = name, KernelPath = TestImages.Kernel, InitrdPath = TestImages.Initrd, Nics = nics,
+                });
+                var (ctl, run) = Wire(vm, cts.Token);
+                controls[name] = ctl;
+                runs.Add(run);
+            }
+            await Task.WhenAll(controls.Values.Select(c => c.WaitReadyAsync(BootTimeout, cts.Token)));
+
+            Assert.True(await controls["jump01"].PingAsync("10.0.0.1", cts.Token), "jump01 经 eth0 没能 ping 通外网的 ws");
+            // 这一条同时验证了网卡顺序：第二块网卡确实成了 eth1、拿到了 m0.ip1 的地址
+            Assert.True(await controls["jump01"].PingAsync("172.16.5.20", cts.Token), "jump01 经 eth1 没能 ping 通内网的 files01");
+            Assert.False(await controls["ws"].PingAsync("172.16.5.20", cts.Token), "ws 不经跳板机就够到了内网");
+            Assert.False(await controls["ws"].PingAsync("10.0.0.9", cts.Token), "同网段不同 VLAN 的机器居然能通");
+
+            // 交换机分 VLAN 学 MAC：jump01 的两块网卡各在自己的 VLAN 里
+            var table = vSwitch.MacTable.Keys.ToList();
+            Assert.Contains(table, k => k.Vlan == Outside && k.Mac.Equals(Mac("52:54:00:00:02:00")));
+            Assert.Contains(table, k => k.Vlan == Inside && k.Mac.Equals(Mac("52:54:00:00:02:01")));
+            Assert.DoesNotContain(table, k => k.Vlan == Outside && k.Mac.Equals(Mac("52:54:00:00:04:00")));
+        }
+        finally
+        {
+            await cts.CancelAsync();
+            foreach (var c in controls.Values) await c.DisposeAsync();
+            foreach (var l in launchers) await l.DisposeAsync();
+            await Task.WhenAll(runs.Select(SafeAwait));
+        }
+    }
+
+    private static MacAddressKey Mac(string text) =>
+        MacAddressKey.From(text.Split(':').Select(h => Convert.ToByte(h, 16)).ToArray());
+
+    [SkippableFact]
     public async Task 隐藏控制通道能双向对话()
     {
         Skip.IfNot(TestImages.GuestImagesReady, TestImages.MissingImagesReason);
@@ -96,9 +162,7 @@ public class SwitchIntegrationTests
         Name = name,
         KernelPath = TestImages.Kernel,
         InitrdPath = TestImages.Initrd,
-        IpAddress = ip,
-        MacAddress = mac,
-        SwitchPort = switchPort,
+        Nics = [new VmNic(mac, switchPort, ip)],
     };
 
     private static (ControlChannel Ctl, Task Run) Wire(QemuLauncher vm, CancellationToken token)
@@ -122,7 +186,7 @@ public class SwitchIntegrationTests
         public bool SawIcmpEchoRequest { get; private set; }
         public bool SawIcmpEchoReply { get; private set; }
 
-        public void OnFrame(int sourcePortId, ReadOnlySpan<byte> frame)
+        public void OnFrame(int sourcePortId, int vlan, ReadOnlySpan<byte> frame)
         {
             // 这里刻意手写最小解析而不引 PacketDotNet：测试要断言的是
             // 「交换机确实看见了真实 ICMP」，多引一层库反而让失败更难定位。

@@ -16,16 +16,23 @@ public class LevelRunTests
     private static readonly LevelDefinition Lab = new()
     {
         Id = "lab", Title = "lab", Track = LevelTrack.Tutorial,
+        Networks = [new NetworkDefinition { Name = "lan", Vlan = 1, Subnet = "10.0.0.0/24" }],
         Machines =
         [
-            new MachineDefinition { Name = "web01", Ip = "10.0.0.1" },
-            new MachineDefinition { Name = "backup", Ip = "10.0.0.2" },
+            Machine("web01", ("lan", "10.0.0.1")),
+            Machine("backup", ("lan", "10.0.0.2")),
         ],
         Steps =
         [
             new LevelStep { Id = "out", Title = "web01 ping backup", Check = new PingCheck { From = "web01", To = "backup" } },
             new LevelStep { Id = "back", Title = "backup ping web01", Check = new PingCheck { From = "backup", To = "web01" } },
         ],
+    };
+
+    private static MachineDefinition Machine(string name, params (string Network, string Ip)[] nics) => new()
+    {
+        Name = name,
+        Nics = nics.Select(n => new NicDefinition { Network = n.Network, Ip = n.Ip }).ToList(),
     };
 
     private static PacketRecord Icmp(string src, string dst, IcmpV4TypeCode code)
@@ -46,7 +53,7 @@ public class LevelRunTests
         var log = new PacketLog();
         PacketRecord? record = null;
         log.PacketCaptured += r => record = r;
-        log.OnFrame(0, eth.Bytes);
+        log.OnFrame(0, 1, eth.Bytes);
         return record!;
     }
 
@@ -89,9 +96,33 @@ public class LevelRunTests
     }
 
     [Fact]
+    public void 多网卡机器从哪块网卡应答都算()
+    {
+        // 跳板机一脚外网一脚内网：内网机器 ping 跳板机，应答来自跳板机的内网地址
+        var level = new LevelDefinition
+        {
+            Id = "j", Title = "j", Track = LevelTrack.Mission,
+            Networks =
+            [
+                new NetworkDefinition { Name = "outside", Vlan = 10, Subnet = "10.0.0.0/24" },
+                new NetworkDefinition { Name = "inside", Vlan = 20, Subnet = "172.16.5.0/24" },
+            ],
+            Machines =
+            [
+                Machine("jump01", ("outside", "10.0.0.2"), ("inside", "172.16.5.1")),
+                Machine("files01", ("inside", "172.16.5.20")),
+            ],
+            Steps = [new LevelStep { Id = "s", Title = "s", Check = new PingCheck { From = "files01", To = "jump01" } }],
+        };
+        var run = new LevelRun(level);
+        run.Observe(Icmp("172.16.5.1", "172.16.5.20", IcmpV4TypeCode.EchoReply));
+        Assert.True(run.IsComplete);
+    }
+
+    [Fact]
     public void 畸形帧不抛异常()
     {
-        var bogus = new PacketRecord(1, TimeSpan.Zero, 0, "?", "?", "ICMP", "", [0x52, 0x54, 0x00]);
+        var bogus = new PacketRecord(1, TimeSpan.Zero, 0, 1, "?", "?", "ICMP", "", [0x52, 0x54, 0x00]);
         new LevelRun(Lab).Observe(bogus);
     }
 }

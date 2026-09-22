@@ -99,14 +99,53 @@ public sealed partial class LevelCatalog
         if (level.Requires.Contains(level.Id))
             Error("requires 里有自己");
 
+        var networks = new Dictionary<string, IPNetwork>();
+        var vlans = new HashSet<int>();
+        foreach (var n in level.Networks)
+        {
+            if (networks.ContainsKey(n.Name)) { Error($"网段名 \"{n.Name}\" 重复"); continue; }
+            if (n.Vlan is < 1 or > 4094) Error($"网段 {n.Name} 的 VLAN {n.Vlan} 不在 1..4094");
+            else if (!vlans.Add(n.Vlan)) Error($"VLAN {n.Vlan} 重复");
+            // .NET 8 的 IPNetwork.TryParse 对 10.0.0.1/24 这种主机位不为零的写法照单全收，
+            // 所以要自己比一下：写的地址必须就是网络地址
+            if (!IPNetwork.TryParse(n.Subnet, out var net) || net.BaseAddress.AddressFamily != AddressFamily.InterNetwork)
+                Error($"网段 {n.Name} 的 subnet \"{n.Subnet}\" 不是形如 10.0.0.0/24 的 IPv4 网段");
+            else if (net.BaseAddress.ToString() != n.Subnet.Split('/')[0] || !net.Contains(net.BaseAddress))
+                Error($"网段 {n.Name} 的 subnet \"{n.Subnet}\" 主机位不为零，应写成网络地址");
+            else if (net.PrefixLength is < 8 or > 30)
+                Error($"网段 {n.Name} 的前缀 /{net.PrefixLength} 不在 /8../30");
+            else networks[n.Name] = net;
+        }
+
         var names = new HashSet<string>();
-        var ips = new HashSet<string>();
+        var ips = new HashSet<IPAddress>();
         foreach (var m in level.Machines)
         {
             if (!names.Add(m.Name)) Error($"机器名 \"{m.Name}\" 重复");
-            if (!IPAddress.TryParse(m.Ip, out var ip) || ip.AddressFamily != AddressFamily.InterNetwork)
-                Error($"机器 {m.Name} 的 ip \"{m.Ip}\" 不是 IPv4 地址");
-            else if (!ips.Add(m.Ip)) Error($"ip {m.Ip} 重复");
+            if (m.Nics.Count is < 1 or > QemuLauncher.MaxNics)
+                Error($"机器 {m.Name} 有 {m.Nics.Count} 块网卡，要在 1..{QemuLauncher.MaxNics}");
+            var joined = new HashSet<string>();
+            foreach (var nic in m.Nics)
+            {
+                string where = $"机器 {m.Name} 的网卡 {nic.Ip}";
+                if (!IPAddress.TryParse(nic.Ip, out var ip) || ip.AddressFamily != AddressFamily.InterNetwork)
+                {
+                    Error($"机器 {m.Name} 的 ip \"{nic.Ip}\" 不是 IPv4 地址");
+                    continue;
+                }
+                if (!ips.Add(ip)) Error($"ip {nic.Ip} 重复");
+                if (!joined.Add(nic.Network))
+                    Error($"机器 {m.Name} 有两块网卡接在同一个网段 {nic.Network}");
+                if (!networks.TryGetValue(nic.Network, out var net))
+                {
+                    if (level.Networks.All(n => n.Name != nic.Network))
+                        Error($"{where} 接的网段 \"{nic.Network}\" 不存在");
+                    continue;
+                }
+                if (!net.Contains(ip)) Error($"{where} 不在网段 {nic.Network}（{net}）里");
+                else if (ip.Equals(net.BaseAddress) || ip.Equals(Broadcast(net)))
+                    Error($"{where} 是网段 {nic.Network} 的网络地址或广播地址");
+            }
             if (HardwarePersona.ByName(m.Persona) is null)
                 Error($"机器 {m.Name} 的人设 \"{m.Persona}\" 不存在，可选: {string.Join(", ", HardwarePersona.Presets.Select(p => p.Name))}");
             if (m.Memory < 64) Error($"机器 {m.Name} 内存 {m.Memory}MB 太小");
@@ -131,6 +170,13 @@ public sealed partial class LevelCatalog
             if (level.Machines.Count == 0) Error("可玩关至少要有一台机器");
             if (level.Steps.Count == 0) Error("可玩关至少要有一个步骤，否则永远完成不了");
         }
+    }
+
+    private static IPAddress Broadcast(IPNetwork net)
+    {
+        byte[] b = net.BaseAddress.GetAddressBytes();
+        uint value = (uint)(b[0] << 24 | b[1] << 16 | b[2] << 8 | b[3]) | (uint.MaxValue >> net.PrefixLength);
+        return new IPAddress([(byte)(value >> 24), (byte)(value >> 16), (byte)(value >> 8), (byte)value]);
     }
 
     /// <summary>在解锁依赖图里找环，找到就返回环上的关卡 id（首尾相同）。</summary>
