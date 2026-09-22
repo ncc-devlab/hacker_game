@@ -43,11 +43,15 @@ public static class QemuLocator
         bool windows = os == OSPlatform.Windows;
         string exe = windows ? "qemu-system-x86_64.exe" : "qemu-system-x86_64";
         char sep = windows ? ';' : ':';
+        // 按目标平台的分隔符拼，不用 Path.Combine —— 后者跟宿主走，
+        // 单元测试在 Windows 上模拟 Linux 时会拼出 /snap/bin\qemu（第三轮 Windows 验证撞上的）
+        string Join(params string[] parts) => string.Join(windows ? "\\" : "/",
+            parts.Select((p, i) => i == 0 ? p.TrimEnd('/', '\\') : p.Trim('/', '\\')));
 
-        var candidates = new List<string> { Path.Combine(root, "runtime", platformDir, "bin", exe) };
+        var candidates = new List<string> { Join(root, "runtime", platformDir, "bin", exe) };
         if (windows)
         {
-            if (!string.IsNullOrEmpty(programFiles)) candidates.Add(Path.Combine(programFiles, "qemu", exe));
+            if (!string.IsNullOrEmpty(programFiles)) candidates.Add(Join(programFiles, "qemu", exe));
             candidates.Add(@"C:\Program Files\qemu\" + exe);
         }
         else if (os == OSPlatform.OSX)
@@ -62,7 +66,7 @@ public static class QemuLocator
 
         foreach (string dir in (pathVar ?? "").Split(sep, StringSplitOptions.RemoveEmptyEntries))
         {
-            string c = Path.Combine(dir.Trim('"'), exe);
+            string c = Join(dir.Trim('"'), exe);
             if (exists(c)) return c;
         }
 

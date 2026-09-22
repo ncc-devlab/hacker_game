@@ -21,7 +21,7 @@ public class QemuLocatorTests
     [Fact]
     public void BundledRuntimeBeatsSystemInstall()
     {
-        string bundled = Path.Combine("/game", "runtime", "macos-arm64", "bin", "qemu-system-x86_64");
+        string bundled = "/game/runtime/macos-arm64/bin/qemu-system-x86_64";
         Assert.Equal(bundled, Find(OSPlatform.OSX, null, "", bundled, "/opt/homebrew/bin/qemu-system-x86_64"));
     }
 
@@ -29,7 +29,7 @@ public class QemuLocatorTests
     public void WindowsFindsDefaultInstallWithoutPath()
     {
         // 官方安装包不改 PATH —— 第二轮 Windows 实测就是这样
-        string exe = Path.Combine(@"C:\Program Files", "qemu", "qemu-system-x86_64.exe");
+        string exe = @"C:\Program Files\qemu\qemu-system-x86_64.exe";
         Assert.Equal(exe, Find(OSPlatform.Windows, null, @"C:\Windows\system32", exe));
     }
 
@@ -41,10 +41,12 @@ public class QemuLocatorTests
             Find(OSPlatform.OSX, null, "/usr/bin:/bin:/usr/sbin:/sbin", "/opt/homebrew/bin/qemu-system-x86_64"));
     }
 
+    // 这些用例在三端上都要成立：路径按被模拟的平台拼，和跑测试的宿主无关
+
     [Fact]
     public void FallsBackToPathThenNull()
     {
-        Assert.Equal(Path.Combine("/snap/bin", "qemu-system-x86_64"),
+        Assert.Equal("/snap/bin/qemu-system-x86_64",
             Find(OSPlatform.Linux, null, "/usr/local/bin:/snap/bin", "/snap/bin/qemu-system-x86_64"));
         Assert.Null(Find(OSPlatform.Linux, null, "/usr/local/bin"));
     }

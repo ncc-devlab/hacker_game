@@ -57,6 +57,8 @@ Start-Transcript -Path (Join-Path $Out 'transcript.txt') | Out-Null
 $Results = New-Object System.Collections.ArrayList
 
 function Step([string]$Name, [bool]$Ok, [string]$Detail = '') {
+    # report.txt 一项一行（Tab 分隔），多行说明（比如取了日志末两行）压成一行
+    $Detail = ($Detail -replace '\s*\r?\n\s*', ' ').Trim()
     [void]$Results.Add([pscustomobject]@{ Name = $Name; Ok = $Ok; Detail = $Detail })
     if ($Ok) { $tag = 'PASS'; $color = 'Green' } else { $tag = 'FAIL'; $color = 'Red' }
     Write-Host ("[{0}] {1}  {2}" -f $tag, $Name, $Detail) -ForegroundColor $color
