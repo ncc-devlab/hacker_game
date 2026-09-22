@@ -108,7 +108,8 @@ function Invoke-Logged([string]$Exe, [string[]]$Arguments, [string]$LogName,
 }
 
 function Tail([string]$Path, [int]$Lines = 15) {
-    if (Test-Path $Path) { (Get-Content $Path -Tail $Lines) -join "`n" } else { '' }
+    # dotnet / Godot 往重定向文件里写的是 UTF-8，5.1 默认按本地代码页读会乱码
+    if (Test-Path $Path) { (Get-Content $Path -Tail $Lines -Encoding UTF8) -join "`n" } else { '' }
 }
 
 # ---------------------------------------------------------------------------
@@ -133,14 +134,19 @@ if ($env:PROCESSOR_ARCHITECTURE -ne 'AMD64') {
 Section '2. .NET 与 Core 测试'
 # 常见误会：装了".NET 10"但装的是运行时（Runtime / Desktop Runtime）而不是 SDK；
 # .NET Framework 4.8.x 是另一套东西，和这里无关。
-# 另一个常见坑：PATH 里 Program Files (x86)\dotnet 排在 64 位那份前面，
-# 32 位的 dotnet 下面没有 SDK。所以把每一份 dotnet.exe 都列出来。
+# 另一个常见坑：32 位和 64 位 dotnet 是两套独立安装，SDK 可能只装在其中一套里。
+# 32 位 SDK 能编译、能跑测试，但 64 位 Godot 编辑器打开工程时要加载 SDK 里的
+# Microsoft.Build.dll（ReadyToRun 编译，带位数），会报 BadImageFormatException /
+# Could not load 'Microsoft.Build(.Framework), Version=15.1.0.0'。
+# 所以把每一份 dotnet.exe 都列出来，并且优先选 64 位的。
 $dotnet = $null
 $dotnetReport = New-Object System.Collections.ArrayList
-$candidates = @()
+$x86Dir = "${env:ProgramFiles(x86)}\dotnet"
+$candidates = @("$env:ProgramFiles\dotnet\dotnet.exe")
 $where = & where.exe dotnet 2>$null
 if ($where) { $candidates += $where }
-$candidates += @("$env:ProgramFiles\dotnet\dotnet.exe", "${env:ProgramFiles(x86)}\dotnet\dotnet.exe")
+$candidates += @("$x86Dir\dotnet.exe")
+$dotnetX86 = $null
 foreach ($c in ($candidates | Where-Object { $_ -and (Test-Path $_) } | Select-Object -Unique)) {
     $sdkList = @(& $c --list-sdks 2>$null | Where-Object { $_ })
     $rtList = @(& $c --list-runtimes 2>$null | Where-Object { $_ })
@@ -149,13 +155,30 @@ foreach ($c in ($candidates | Where-Object { $_ -and (Test-Path $_) } | Select-O
     [void]$dotnetReport.Add("$c")
     [void]$dotnetReport.Add("  SDK:    $sdkText")
     [void]$dotnetReport.Add("  运行时: $rtText")
-    if (-not $dotnet -and ($sdkList -match '^\s*([89]|\d\d)\.')) { $dotnet = $c }
+    if ($sdkList -match '^\s*([89]|\d\d)\.') {
+        $is32 = ($env:PROCESSOR_ARCHITECTURE -eq 'AMD64') -and
+                $c.StartsWith($x86Dir, [System.StringComparison]::OrdinalIgnoreCase)
+        if ($is32) { if (-not $dotnetX86) { $dotnetX86 = $c } }
+        elseif (-not $dotnet) { $dotnet = $c }
+    }
 }
+# 只有 32 位 SDK 时仍然用它把后面的步骤跑完（编译、测试、自检都不受影响），
+# 但单列一项失败：编辑器打不开工程
+$sdkIs32 = $false
+if (-not $dotnet -and $dotnetX86) { $dotnet = $dotnetX86; $sdkIs32 = $true }
 $dotnetText = $dotnetReport -join "`n"
 Set-Content -Path (Join-Path $Out 'dotnet-info.txt') -Value $dotnetText -Encoding UTF8
 Write-Host $dotnetText
 if ($dotnet) {
     Step '.NET SDK' $true $dotnet
+    if ($sdkIs32) {
+        Step '.NET SDK 是 64 位（Godot 编辑器需要）' $false ('只有 32 位 SDK。命令行编译和自检能过，' +
+            '但在 Godot 编辑器里打开工程会报 Microsoft.Build 加载失败。装 x64 版 .NET 10 SDK：' +
+            'https://dotnet.microsoft.com/download/dotnet/10.0 —— SDK 栏 Windows 的 "x64"（不是 x86）；' +
+            '32 位那份可以在"应用和功能"里卸掉')
+    } else {
+        Step '.NET SDK 是 64 位（Godot 编辑器需要）' $true
+    }
     # 后面所有步骤都用这一份，避免 PATH 先命中那份没有 SDK 的
     $env:PATH = (Split-Path $dotnet) + ';' + $env:PATH
 } elseif ($dotnetReport.Count -gt 0) {
@@ -303,6 +326,20 @@ if (-not $godotExe -or -not (Test-Path $godotExe)) {
             Step 'Godot 资源导入' $false 'Godot 找不到 .NET 运行时（hostfxr）'
         } else {
             Step 'Godot 资源导入' ($code -eq 0) "退出码 $code"
+        }
+        # --import 会走一遍编辑器插件初始化，GodotTools 在这里用 MSBuild 打开 csproj。
+        # 这一步出错不影响退出码，但玩家双击打开编辑器时就是这个报错
+        $importErr = Join-Path $Out 'godot-import.err.txt'
+        $msb = $null
+        if (Test-Path $importErr) {
+            $msb = Select-String -Path $importErr -Pattern 'Microsoft\.Build|MSBuildLocator' -Encoding UTF8 |
+                   Select-Object -First 1
+        }
+        if ($msb) {
+            Step 'Godot 编辑器能加载 MSBuild' $false ("$($msb.Line.Trim())" +
+                ' —— 多半是 SDK 位数不对，见 .NET SDK 那一项')
+        } else {
+            Step 'Godot 编辑器能加载 MSBuild' $true
         }
     }
 
