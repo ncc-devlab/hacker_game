@@ -80,8 +80,13 @@ m0_start_admin_tty() {
     fi
 
     # -L 不等载波；vt100 让 login 之后的 shell 知道终端类型。
-    # setsid 是必须的：getty 要自己当会话首进程才能把 tty 变成控制终端
-    setsid getty -L 115200 ttyS2 vt100 >/dev/null 2>&1 &
+    # setsid 是必须的：getty 要自己当会话首进程才能把 tty 变成控制终端。
+    # 要循环重启：管理员查完岗会 exit，getty 也跟着结束，
+    # 不重开的话他这辈子只能登录一次（真机上这是 init 的活）
+    ( while : ; do
+        setsid getty -L 115200 ttyS2 vt100 >/dev/null 2>&1
+        sleep 1
+      done ) &
 }
 
 # tmux / script / 任何要开子终端的程序都需要 pty。

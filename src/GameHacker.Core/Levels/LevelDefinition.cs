@@ -1,5 +1,6 @@
 using System.Net;
 using System.Text.Json.Serialization;
+using GameHacker.Core.Admin;
 using GameHacker.Core.Net;
 
 namespace GameHacker.Core.Levels;
@@ -63,6 +64,11 @@ public sealed record LevelDefinition
 
     /// <summary>任务步骤，按顺序推进，一步完成才显示下一步的提示。</summary>
     public IReadOnlyList<LevelStep> Steps { get; init; } = [];
+
+    /// <summary>
+    /// 这一关有没有管理员会来查岗。给了的话，他那台机器会多一个登录终端。
+    /// </summary>
+    public AdminDefinition? Admin { get; init; }
 }
 
 /// <summary>一个网段。</summary>

@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.Threading;
 using System.Threading.Tasks;
 using GameHacker.Core.Channels;
@@ -32,11 +33,15 @@ public sealed class VmSession : IAsyncDisposable, IDisposable
         bridgeParent.AddChild(Bridge);
         Bridge.Attach(terminal, _launcher.Console!, Control);
 
-        // 两条通道的接收循环。监听口在 Start() 里就已经开好了，
+        // 各条通道的接收循环。监听口在 Start() 里就已经开好了，
         // 所以客户机开机的第一个字节也不会丢。
-        _pump = Task.WhenAll(
+        var pumps = new List<Task>
+        {
             _launcher.Console!.RunAsync(_cts.Token),
-            _launcher.Control!.RunAsync(_cts.Token));
+            _launcher.Control!.RunAsync(_cts.Token),
+        };
+        if (_launcher.Admin is not null) pumps.Add(_launcher.Admin.RunAsync(_cts.Token));
+        _pump = Task.WhenAll(pumps);
     }
 
     public VmSpec Spec { get; }
@@ -51,6 +56,9 @@ public sealed class VmSession : IAsyncDisposable, IDisposable
         return _launcher.DescribeFailure() + "\n       " + seen;
     }
     public ControlChannel Control { get; }
+
+    /// <summary>管理员的登录终端（ttyS2）。这台机器没有管理员时为 <c>null</c>。</summary>
+    public SerialChannel? AdminTty => _launcher.Admin;
     public TerminalBridge Bridge { get; }
 
     /// <summary>

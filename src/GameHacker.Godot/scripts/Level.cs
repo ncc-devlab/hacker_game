@@ -2,6 +2,8 @@ using System;
 using System.Collections.Generic;
 using System.Linq;
 using System.Threading.Tasks;
+using GameHacker.Core.Admin;
+using GameHacker.Core.Channels;
 using GameHacker.Core.Levels;
 using GameHacker.Core.Net;
 using GameHacker.Core.Qemu;
@@ -37,6 +39,16 @@ public partial class Level : Control
     private readonly TaskCompletionSource _completed = new(TaskCreationOptions.RunContinuationsAsynchronously);
     private volatile bool _closing;
 
+    // --- 管理员 ---
+    private PanelContainer _adminPanel = null!;
+    private Label _adminStatus = null!;
+    private ProgressBar _threat = null!;
+    private VBoxContainer _findings = null!;
+    private AdminAgent? _admin;
+    private TtySession? _adminTty;
+    private AdminAccount? _adminAccount;
+    private readonly System.Threading.CancellationTokenSource _adminCts = new();
+
     public override void _Ready()
     {
         _status = GetNode<Label>("%Status");
@@ -46,6 +58,10 @@ public partial class Level : Control
         _stepsBox = GetNode<VBoxContainer>("%Steps");
         _hint = GetNode<Label>("%Hint");
         _packets = GetNode<PacketPanel>("%Packets");
+        _adminPanel = GetNode<PanelContainer>("%Admin");
+        _adminStatus = GetNode<Label>("%Status2");
+        _threat = GetNode<ProgressBar>("%Threat");
+        _findings = GetNode<VBoxContainer>("%Findings");
         _packets.Attach(_packetLog);
         _back.Pressed += () => GameState.Instance.BackToSelect();
 
@@ -57,6 +73,14 @@ public partial class Level : Control
         }
         _level = level;
         _levelTitle.Text = level.Title;
+
+        // 口令每局现生成，关卡文件里不留 —— 玩家翻关卡文件也拿不到管理员的账号
+        if (level.Admin is { } adminDefinition)
+        {
+            _adminAccount = new AdminAccount(adminDefinition.User, NewPassword());
+            _adminPanel.Visible = true;
+            _threat.MaxValue = adminDefinition.Threshold;
+        }
 
         _run = new LevelRun(level);
         _run.StepCompleted += step => Callable.From(() => OnStepCompleted(step)).CallDeferred();
@@ -132,6 +156,7 @@ public partial class Level : Control
 
             SetStatus($"{_sessions.Count} 台机器就绪");
             _terminals[0].GrabFocus();
+            StartAdmin();
 
             await MaybeSelfTestAsync();
             await MaybeScreenshotAsync();
@@ -161,6 +186,7 @@ public partial class Level : Control
             Nics = LevelTopology.Nics(_level, index)
                 .Select(n => new VmNic(n.Mac, vSwitch.PortFor(n.Vlan), n.IpWithPrefix))
                 .ToList(),
+            Admin = _level.Admin?.Machine == m.Name ? _adminAccount : null,
             MemoryMegabytes = m.Memory,
             // 关卡里不写回镜像，保持基础镜像干净。
             // 真正的存档走 qcow2 backing file + user:// 下的 overlay。
@@ -226,6 +252,108 @@ public partial class Level : Control
         dialog.PopupCentered();
     }
 
+    // --- 管理员 -------------------------------------------------------------
+
+    /// <summary>客户机起来之后，管理员开始按自己的节奏来查岗。</summary>
+    private void StartAdmin()
+    {
+        if (_level.Admin is not { } definition || _adminAccount is null) return;
+
+        var session = _sessions.FirstOrDefault(s => s.Spec.Name == definition.Machine);
+        if (session?.AdminTty is null)
+        {
+            GD.PushError($"[level] {definition.Machine} 上没有管理员登录终端");
+            return;
+        }
+
+        _adminTty = new TtySession(session.AdminTty);
+        _admin = new AdminAgent(definition, _adminAccount, _adminTty);
+        // 两个事件都在后台线程上触发，碰界面之前先回主线程
+        _admin.ActivityChanged += _ => Callable.From(ShowAdmin).CallDeferred();
+        _admin.PatrolCompleted += report => Callable.From(() => OnPatrolCompleted(report)).CallDeferred();
+        _ = _admin.RunAsync(_adminCts.Token);
+        ShowAdmin();
+    }
+
+    private void OnPatrolCompleted(PatrolReport report)
+    {
+        if (_closing || _admin is null) return;
+        ShowAdmin();
+        if (report.FoundSomething)
+            SetStatus($"{_adminAccount!.User} 在 {report.Machine} 上发现了不对劲的东西", Colors.Orange);
+        if (report.Exposed) OnExposed();
+    }
+
+    /// <summary>威胁评分到顶：任务失败。</summary>
+    /// <remarks>
+    /// 失败之后按 MVP2 的设计应该能用快照复位到干净的初始状态重来，
+    /// 那套还没做，现在只能退回选关重进。
+    /// </remarks>
+    private void OnExposed()
+    {
+        _adminCts.Cancel();
+        SetStatus($"任务失败：{_adminAccount!.User} 已经确定有人动过 {_level.Admin!.Machine}", Colors.IndianRed);
+        if (GameState.IsAutomated) return;
+
+        string why = string.Join("\n", _admin!.Findings.Select(f => "· " + f.Explanation));
+        var dialog = new AcceptDialog
+        {
+            Title = "被发现了",
+            DialogText = $"管理员查岗时发现：\n\n{why}\n\n任务失败。",
+            OkButtonText = "返回选关",
+        };
+        AddChild(dialog);
+        dialog.Confirmed += () => GameState.Instance.BackToSelect();
+        dialog.PopupCentered();
+    }
+
+    /// <summary>刷新管理员面板。倒计时每帧会变，所以 <see cref="_Process"/> 也调它。</summary>
+    private void ShowAdmin()
+    {
+        if (_admin is null || !IsInstanceValid(_adminStatus)) return;
+
+        string machine = _level.Admin!.Machine;
+        _adminStatus.Text = _admin.Activity switch
+        {
+            AdminActivity.LoggingIn => $"{_adminAccount!.User} 正在登录 {machine}",
+            AdminActivity.Checking => $"{_adminAccount!.User} 正在检查 {machine}",
+            _ => $"{_adminAccount!.User} 不在 {machine} 上。下次查岗约在 {Countdown(_admin.TimeToNextPatrol)} 后",
+        };
+        _adminStatus.Modulate = _admin.Activity == AdminActivity.Away ? Colors.White : new Color(1f, 0.8f, 0.4f);
+
+        _threat.Value = _admin.Score;
+        // 这一栏只在有发现时才有内容：没被抓到的时候不该有任何提示，
+        // 否则玩家能靠界面反推自己有没有留痕
+        if (_findings.GetChildCount() == _admin.Findings.Count) return;
+        foreach (Node child in _findings.GetChildren()) child.QueueFree();
+        foreach (var finding in _admin.Findings)
+            _findings.AddChild(new Label
+            {
+                Text = $"· {finding.Explanation}\n  {finding.Evidence}",
+                AutowrapMode = TextServer.AutowrapMode.WordSmart,
+                Modulate = new Color(1f, 0.6f, 0.5f),
+                CustomMinimumSize = new Vector2(240, 0),
+            });
+    }
+
+    private static string Countdown(TimeSpan left) =>
+        left <= TimeSpan.Zero ? "随时" : $"{(int)left.TotalMinutes}:{left.Seconds:00}";
+
+    public override void _Process(double delta)
+    {
+        if (_admin is not null && _admin.Activity == AdminActivity.Away) ShowAdmin();
+    }
+
+    /// <summary>管理员的口令。玩家在关卡文件里找不到它，只能在客户机上想办法。</summary>
+    private static string NewPassword()
+    {
+        const string alphabet = "abcdefghijkmnpqrstuvwxyzABCDEFGHJKLMNPQRSTUVWXYZ23456789";
+        var random = System.Security.Cryptography.RandomNumberGenerator.Create();
+        var bytes = new byte[16];
+        random.GetBytes(bytes);
+        return new string(bytes.Select(b => alphabet[b % alphabet.Length]).ToArray());
+    }
+
     // --- 自检与截图 ---------------------------------------------------------
 
     /// <summary>
@@ -288,11 +416,34 @@ public partial class Level : Control
         string? path = System.Environment.GetEnvironmentVariable("GAMEHACKER_SCREENSHOT");
         if (string.IsNullOrWhiteSpace(path)) return;
 
-        // 挑的命令要同时展示三样东西：终端渲染、伪装生效、以及抓包面板有货
-        await TypeAsync(_sessions[0], "uname -a; cat /sys/class/dmi/id/product_name\n");
-        if (_sessions.Count >= 2)
-            await TypeAsync(_sessions[1], $"ping -c2 {_level.Machines[0].Nics[0].Ip}\n");
-        await Task.Delay(4000);
+        // 默认挑的命令要同时展示三样东西：终端渲染、伪装生效、以及抓包面板有货。
+        // GAMEHACKER_TYPE 可以换成别的，格式是「机器名:命令」，多条用分号隔开 ——
+        // 想截某个特定状态（比如管理员发现了什么）时用得上
+        string? script = System.Environment.GetEnvironmentVariable("GAMEHACKER_TYPE");
+        if (string.IsNullOrWhiteSpace(script))
+        {
+            await TypeAsync(_sessions[0], "uname -a; cat /sys/class/dmi/id/product_name\n");
+            if (_sessions.Count >= 2)
+                await TypeAsync(_sessions[1], $"ping -c2 {_level.Machines[0].Nics[0].Ip}\n");
+        }
+        else
+        {
+            // ready 信标来自 ttyS1 的代理，它比 ttyS0 上的 shell 早起来几秒。
+            // 不等这一下，字会送进一个还没人读的串口，直接丢掉
+            await Task.Delay(3000);
+            foreach (string entry in script.Split(';', StringSplitOptions.RemoveEmptyEntries))
+            {
+                string[] parts = entry.Split(':', 2);
+                var target = _sessions.FirstOrDefault(s => s.Spec.Name == parts[0]);
+                if (parts.Length < 2 || target is null) { GD.PushWarning($"[level] 看不懂的 GAMEHACKER_TYPE 条目: {entry}"); continue; }
+                await TypeAsync(target, parts[1] + "\n");
+            }
+        }
+
+        // 截图前多等一会儿，用来等某件事发生（比如管理员来查岗）
+        double extra = double.TryParse(
+            System.Environment.GetEnvironmentVariable("GAMEHACKER_SCREENSHOT_DELAY"), out double d) ? d : 4;
+        await Task.Delay(TimeSpan.FromSeconds(extra));
 
         // 截图必须在主线程、且要等当前帧画完
         await ToSignal(RenderingServer.Singleton, RenderingServerInstance.SignalName.FramePostDraw);
@@ -333,6 +484,8 @@ public partial class Level : Control
     public override void _ExitTree()
     {
         _closing = true;
+        _adminCts.Cancel();
+        _adminTty?.Dispose();
         if (_run is not null) _packetLog.PacketCaptured -= _run.Observe;
 
         // 三端验证时把这一轮的流量留成证据，用 Wireshark 就能对照

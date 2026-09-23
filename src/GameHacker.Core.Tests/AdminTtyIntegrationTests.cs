@@ -1,3 +1,4 @@
+using GameHacker.Core.Admin;
 using GameHacker.Core.Channels;
 using GameHacker.Core.Net;
 using GameHacker.Core.Qemu;
@@ -60,6 +61,53 @@ public class AdminTtyIntegrationTests
 
         await admin.LogoutAsync(TtyTimeout, cts.Token);
         Assert.Null(admin.User);
+
+        await cts.CancelAsync();
+        try { await run; } catch (OperationCanceledException) { }
+    }
+
+    [SkippableFact]
+    public async Task 管理员查岗_发现玩家留在机器上的进程()
+    {
+        Skip.IfNot(TestImages.GuestImagesReady, TestImages.MissingImagesReason);
+
+        await using var vSwitch = new VirtualSwitch(port: 0);
+        using var cts = new CancellationTokenSource(TimeSpan.FromMinutes(3));
+        _ = vSwitch.RunAsync(cts.Token);
+
+        var account = new AdminAccount("opsadm", "Zx7-quiet-lane");
+        await using var vm = new QemuLauncher(TestImages.QemuPath);
+        vm.Start(new VmSpec
+        {
+            Name = "jump01",
+            KernelPath = TestImages.Kernel,
+            InitrdPath = TestImages.Initrd,
+            Nics = [new VmNic("52:54:00:00:01:00", vSwitch.Port, "10.0.0.2/24")],
+            Admin = account,
+        });
+        var run = Task.WhenAll(vm.Console!.RunAsync(cts.Token), vm.Control!.RunAsync(cts.Token),
+                               vm.Admin!.RunAsync(cts.Token));
+        await using var control = new ControlChannel(vm.Control!);
+        await control.WaitReadyAsync(BootTimeout, cts.Token);
+
+        var definition = new AdminDefinition { Machine = "jump01", User = account.User, Threshold = 40 };
+        using var tty = new TtySession(vm.Admin!);
+        var agent = new AdminAgent(definition, account, tty, seed: 1);
+
+        // 先查一次：玩家什么都还没做，机器是干净的
+        var before = await agent.PatrolAsync(cts.Token);
+        Assert.False(before.FoundSomething);
+        Assert.Equal(AdminActivity.Away, agent.Activity);   // 查完就下线
+
+        // 玩家在自己的终端上留了个后台进程，然后管理员又来了
+        await vm.Console!.SendAsync("sleep 600 &\n"u8.ToArray(), cts.Token);
+        await Task.Delay(2000, cts.Token);
+
+        var after = await agent.PatrolAsync(cts.Token);
+        var finding = Assert.Single(after.Findings);
+        Assert.Contains("sleep 600", finding.Subject);
+        Assert.Contains("sleep 600", finding.Explanation);
+        Assert.Equal(definition.ProcessWeight, after.Score);
 
         await cts.CancelAsync();
         try { await run; } catch (OperationCanceledException) { }

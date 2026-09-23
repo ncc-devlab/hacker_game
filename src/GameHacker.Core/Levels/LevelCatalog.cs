@@ -3,6 +3,7 @@ using System.Net.Sockets;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using System.Text.RegularExpressions;
+using GameHacker.Core.Admin;
 using GameHacker.Core.Qemu;
 
 namespace GameHacker.Core.Levels;
@@ -149,6 +150,20 @@ public sealed partial class LevelCatalog
             if (HardwarePersona.ByName(m.Persona) is null)
                 Error($"机器 {m.Name} 的人设 \"{m.Persona}\" 不存在，可选: {string.Join(", ", HardwarePersona.Presets.Select(p => p.Name))}");
             if (m.Memory < 64) Error($"机器 {m.Name} 内存 {m.Memory}MB 太小");
+        }
+
+        if (level.Admin is { } admin)
+        {
+            if (!names.Contains(admin.Machine))
+                Error($"管理员要查的机器 \"{admin.Machine}\" 不存在");
+            if (admin.IntervalSeconds < 5 || admin.FirstPatrolSeconds < 0)
+                Error("管理员的查岗间隔太短");
+            if (admin.JitterSeconds < 0 || admin.JitterSeconds >= admin.IntervalSeconds)
+                Error($"查岗浮动 {admin.JitterSeconds}s 要小于间隔 {admin.IntervalSeconds}s，否则间隔可能变成 0");
+            if (admin.Threshold <= 0 || admin.ProcessWeight <= 0)
+                Error("威胁评分的阈值和扣分都要大于 0");
+            if (string.IsNullOrWhiteSpace(admin.User))
+                Error("管理员得有个账号名");
         }
 
         var stepIds = new HashSet<string>();
