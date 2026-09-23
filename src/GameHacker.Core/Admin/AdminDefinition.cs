@@ -11,6 +11,12 @@ public enum AdminCheck
     Log,
     /// <summary>该在跑的服务还在不在。</summary>
     Services,
+    /// <summary>有没有不该开的端口在监听（<c>netstat -ltnu</c>）。</summary>
+    Ports,
+    /// <summary>临时目录里有没有多出来的文件 —— 玩家的工具多半就扔在那。</summary>
+    Files,
+    /// <summary>跑一遍他家目录里的运维脚本，只看脚本打印出来的东西。</summary>
+    Script,
 }
 
 /// <summary>玩家看不看得见管理员的动向。</summary>
@@ -33,6 +39,9 @@ public sealed record AdminAction
 
     /// <summary>这项检查发现一处可疑，加多少怀疑度。</summary>
     public int Weight { get; init; } = 20;
+
+    /// <summary><see cref="AdminCheck.Script"/> 跑哪个脚本，对应 <see cref="AdminDefinition.Scripts"/> 里的名字。</summary>
+    public string? Script { get; init; }
 }
 
 /// <summary>他多久来一次、来了待多久。</summary>
@@ -88,6 +97,36 @@ public sealed record AdminAllow
 
     /// <summary>日志里出现就算可疑的内容（子串，不区分大小写）。</summary>
     public IReadOnlyList<string> LogRedFlags { get; init; } = [];
+
+    /// <summary>
+    /// 本来就该在监听的端口，写 <c>tcp/22</c>、<c>udp/514</c>，或者只写端口号表示两种协议都算。
+    /// </summary>
+    public IReadOnlyList<string> Ports { get; init; } = [];
+
+    /// <summary>查文件时看哪些目录。</summary>
+    public IReadOnlyList<string> FileDirs { get; init; } = ["/tmp", "/var/tmp", "/dev/shm"];
+
+    /// <summary>这些目录里本来就有的文件，写完整路径，可以带 <c>*</c>。</summary>
+    public IReadOnlyList<string> Files { get; init; } = [];
+}
+
+/// <summary>
+/// 管理员家目录下的一个运维脚本：按顺序做哪几项检查。
+/// </summary>
+/// <remarks>
+/// <para>脚本真的写在客户机的 <c>~/bin</c> 里，内容就是这几项检查对应的命令，
+/// 每段前面打一行 <c>== 检查名 ==</c>。玩家能翻到它、读懂新手管理员每天看什么 ——
+/// 这本身就是一种侦察。</para>
+/// <para>玩家也能改它。新手只会看脚本打印出来的东西，脚本被做了手脚他看不出来；
+/// 但脚本整个没了、跑不起来，他会注意到。</para>
+/// </remarks>
+public sealed record AdminScript
+{
+    /// <summary>文件名，如 <c>daily-check.sh</c>。</summary>
+    public required string Name { get; init; }
+
+    /// <summary>脚本里依次做哪几项检查。不能再套 <see cref="AdminCheck.Script"/>。</summary>
+    public required IReadOnlyList<AdminCheck> Checks { get; init; }
 }
 
 /// <summary>某个阶段里管理员的变化。只覆盖写了的部分。</summary>
@@ -129,6 +168,45 @@ public sealed record AdminDefinition
     /// 彻底检查时做哪些事（<see cref="Routine"/> 里的 id）。留空就是全做一遍。
     /// </summary>
     public IReadOnlyList<string> Sweep { get; init; } = [];
+
+    /// <summary>
+    /// 强制这一关的管理员是哪一档，无视玩家选的难度。不写就按难度抽。
+    /// </summary>
+    public AdminSkill? Skill { get; init; }
+
+    /// <summary>
+    /// 在内置的某一档做派上改几处，见 <see cref="AdminProfile"/>。键是档位。
+    /// </summary>
+    public IReadOnlyDictionary<AdminSkill, AdminProfile> Tiers { get; init; } =
+        new Dictionary<AdminSkill, AdminProfile>();
+
+    /// <summary>
+    /// 他家目录里的运维脚本。不写就用 <see cref="AdminProfile.DefaultScripts"/>
+    /// —— 新手的例行检查就是跑它们。
+    /// </summary>
+    public IReadOnlyList<AdminScript>? Scripts { get; init; }
+
+    /// <summary>
+    /// 起了疑心时他可能会改掉哪些账号的口令（通常就是玩家拿到的那个）。
+    /// 空着就是这一关他不会改口令。
+    /// </summary>
+    public IReadOnlyList<string> PasswordTargets { get; init; } = [];
+
+    /// <summary>实际用的运维脚本。</summary>
+    public IReadOnlyList<AdminScript> EffectiveScripts => Scripts ?? AdminProfile.DefaultScripts;
+
+    /// <summary>某一档管理员在这一关的完整做派：内置预设，再叠上关卡写的改动。</summary>
+    public AdminProfile ProfileFor(AdminSkill skill) =>
+        Tiers.TryGetValue(skill, out var overlay)
+            ? AdminProfile.Preset(skill).With(overlay)
+            : AdminProfile.Preset(skill);
+
+    /// <summary>某一档管理员平时做的事：他的预设给了就用预设，否则用关卡写的 <see cref="Routine"/>。</summary>
+    public IReadOnlyList<AdminAction> RoutineFor(AdminSkill skill) => ProfileFor(skill).Routine ?? Routine;
+
+    /// <summary>这一关可能出现哪几档。强制了档位就只有那一档。</summary>
+    public IEnumerable<AdminSkill> PossibleSkills =>
+        Skill is { } forced ? [forced] : Enum.GetValues<AdminSkill>();
 
     /// <summary>按关卡步骤 id 挂的阶段设定。玩家推进到那一步时生效。</summary>
     public IReadOnlyDictionary<string, AdminStage> Stages { get; init; } =

@@ -24,10 +24,17 @@
   // 每次登录只随手看几样（按各自的概率抽），看到小事只是起疑；
   // 疑心攒到 sweepAt 就把机器从头翻一遍，那一遍基本什么都藏不住。
   // 所以玩家要管理的不是「这次别被看到」，而是「别让他起疑心」。
+  //
+  // 来的是哪一档人由玩家选的难度抽：新手只跑家目录 ~/bin 里的巡检脚本；
+  // 熟手照下面的 routine 来；老手自带一套细查的手法（进程、端口、服务、临时文件），
+  // 阈值低到一处异常就可能当场全查，还可能直接改掉 passwordTargets 里账号的口令。
   "admin": {
     "machine": "jump01",
     "user": "opsadm",
+    // "skill": "senior",           // 写了就强制这一档，无视难度
     "visibility": "shown",          // 高手模式改成 hidden：界面上不再显示他的动向
+    // 玩家拿到的那个账号定下来以后填进来：老手起疑时会改掉它的口令，玩家就再也登不进来了
+    "passwordTargets": [],
     "schedule": {
       "firstPatrolSeconds": 90,
       "intervalSeconds": 120,
@@ -49,8 +56,11 @@
       // 属于常态。真正该让他起疑的是「除此之外还有人在」
       "sessions": ["ttyS2", "ttyS0"],
       "services": ["syslogd"],      // 玩家嫌它碍事把它杀了，同样可疑
-      "logRedFlags": ["nc ", "tcpdump", "scp ", "/tmp/"]
+      "logRedFlags": ["nc ", "tcpdump", "scp ", "/tmp/"],
+      "ports": []                   // 跳板机上本来没有东西在监听：多出来的都可疑
     },
+    // 熟手的例行检查。新手和老手各有一套自己的（见 AdminProfile），
+    // 要改他们就在 "tiers": { "junior": {...}, "senior": {...} } 里只写想改的那几处
     "routine": [
       { "id": "sessions", "check": "sessions", "chance": 0.6, "weight": 20 },
       { "id": "processes", "check": "processes", "chance": 0.5, "weight": 20 },

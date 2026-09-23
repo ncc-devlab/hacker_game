@@ -161,14 +161,49 @@ public sealed partial class LevelCatalog
 
             ValidateAdminSchedule(admin.Schedule, "", Error);
             ValidateAdminSuspicion(admin.Suspicion, "", Error);
-            ValidateAdminRoutine(admin.Routine, "", Error);
 
+            var scriptNames = new HashSet<string>();
+            foreach (var script in admin.Scripts ?? [])
+            {
+                if (!FileNamePattern().IsMatch(script.Name)) Error($"脚本名 \"{script.Name}\" 只能用字母、数字、点、连字符和下划线");
+                if (!scriptNames.Add(script.Name)) Error($"脚本 \"{script.Name}\" 重复");
+                if (script.Checks.Count == 0) Error($"脚本 {script.Name} 什么检查都不做");
+                if (script.Checks.Contains(AdminCheck.Script)) Error($"脚本 {script.Name} 里不能再跑脚本");
+            }
+            var scripts = admin.EffectiveScripts.Select(s => s.Name).ToHashSet();
+
+            foreach (string user in admin.PasswordTargets)
+            {
+                if (!UserPattern().IsMatch(user)) Error($"要改口令的账号 \"{user}\" 不是合法的用户名");
+                // root 的口令是他改别人口令的钥匙；他自己的口令改了游戏就登不上去了
+                else if (user == "root" || user == admin.User) Error($"管理员不能改 {user} 的口令");
+            }
+
+            foreach (var (skill, tier) in admin.Tiers)
+                ValidateAdminProfile(tier, $"档位 {Kebab(skill)} ", Error);
+
+            if (admin.Routine.Count > 0) ValidateAdminRoutine(admin.Routine, "", scripts, Error);
             var ids = admin.Routine.Select(a => a.Id).ToHashSet();
             foreach (string id in admin.Sweep)
                 if (!ids.Contains(id))
                     Error($"彻底检查里的 \"{id}\" 不在 routine 里");
-            if (admin.Routine.Count == 0)
-                Error("管理员至少要有一件例行要做的事，否则他来了什么也不看");
+
+            // 难度会抽到哪一档，这一关就得对哪一档说得通
+            foreach (var skill in admin.PossibleSkills)
+            {
+                string who = $"{Kebab(skill)} 档的管理员";
+                var profile = admin.ProfileFor(skill);
+                var routine = admin.RoutineFor(skill);
+                if (routine.Count == 0)
+                {
+                    Error($"{who}没有例行要做的事，否则他来了什么也不看 —— 给 routine，或者在 tiers 里给他一套");
+                    continue;
+                }
+                if (profile.Routine is not null) ValidateAdminRoutine(routine, $"{who}", scripts, Error);
+                var mine = routine.Select(a => a.Id).ToHashSet();
+                foreach (string id in profile.Sweep ?? [])
+                    if (!mine.Contains(id)) Error($"{who}彻底检查里的 \"{id}\" 不在他的 routine 里");
+            }
 
             var stepIdSet = level.Steps.Select(s => s.Id).ToHashSet();
             foreach (var (stepId, stage) in admin.Stages)
@@ -178,7 +213,7 @@ public sealed partial class LevelCatalog
                     Error($"{where}对不上任何一个步骤 id");
                 if (stage.Schedule is { } schedule) ValidateAdminSchedule(schedule, where, Error);
                 if (stage.Suspicion is { } suspicion) ValidateAdminSuspicion(suspicion, where, Error);
-                if (stage.Routine is { } routine) ValidateAdminRoutine(routine, where, Error);
+                if (stage.Routine is { } routine) ValidateAdminRoutine(routine, where, scripts, Error);
             }
         }
 
@@ -224,7 +259,8 @@ public sealed partial class LevelCatalog
         if (rules.SweepMultiplier < 1) error($"{where}彻底检查的倍率至少是 1");
     }
 
-    private static void ValidateAdminRoutine(IReadOnlyList<AdminAction> routine, string where, Action<string> error)
+    private static void ValidateAdminRoutine(IReadOnlyList<AdminAction> routine, string where,
+                                             IReadOnlySet<string> scripts, Action<string> error)
     {
         var seen = new HashSet<string>();
         foreach (var action in routine)
@@ -232,8 +268,43 @@ public sealed partial class LevelCatalog
             if (!seen.Add(action.Id)) error($"{where}例行动作 id \"{action.Id}\" 重复");
             if (action.Chance is <= 0 or > 1) error($"{where}动作 \"{action.Id}\" 的概率 {action.Chance} 要在 0..1 之间");
             if (action.Weight <= 0) error($"{where}动作 \"{action.Id}\" 的怀疑度要大于 0");
+            if (action.Check == AdminCheck.Script)
+            {
+                if (action.Script is null) error($"{where}动作 \"{action.Id}\" 要跑脚本，但没写跑哪个（script）");
+                else if (!scripts.Contains(action.Script))
+                    error($"{where}动作 \"{action.Id}\" 要跑的脚本 \"{action.Script}\" 不在 scripts 里，可选: {string.Join(", ", scripts)}");
+            }
+            else if (action.Script is not null)
+                error($"{where}动作 \"{action.Id}\" 不是跑脚本（check: script），不该写 script");
         }
     }
+
+    private static void ValidateAdminProfile(AdminProfile profile, string where, Action<string> error)
+    {
+        void Probability(double? p, string what)
+        {
+            if (p is < 0 or > 1) error($"{where}{what} {p} 要在 0..1 之间");
+        }
+        void Positive(double? v, string what)
+        {
+            if (v is <= 0) error($"{where}{what} {v} 要大于 0");
+        }
+
+        Positive(profile.SweepAtScale, "彻底检查阈值倍率");
+        Positive(profile.PauseScale, "停顿倍率");
+        if (profile.CalmScale is < 0) error($"{where}疑心消退倍率不能是负数");
+        if (profile.SweepMultiplierBonus is < 0) error($"{where}彻底检查倍数加成不能是负数");
+        Probability(profile.SweepOnTheSpotChance, "当场全查的概率");
+        Probability(profile.PasswordChance, "改口令的概率");
+        Probability(profile.PasswordChanceOnFinding, "看出东西后改口令的概率");
+        if (profile.MinActions is < 0 || profile.MaxActions is < 1
+            || profile is { MinActions: { } min, MaxActions: { } max } && min > max)
+            error($"{where}一次查岗做几件事的上下限不对：{profile.MinActions}..{profile.MaxActions}");
+    }
+
+    /// <summary>枚举在关卡文件里的写法，报错时照着写，作者才找得到。</summary>
+    private static string Kebab<T>(T value) where T : struct, Enum =>
+        JsonNamingPolicy.KebabCaseLower.ConvertName(value.ToString());
 
     private static IPAddress Broadcast(IPNetwork net)
     {
@@ -272,4 +343,10 @@ public sealed partial class LevelCatalog
 
     [GeneratedRegex("^[a-z0-9]+(-[a-z0-9]+)*$")]
     private static partial Regex IdPattern();
+
+    [GeneratedRegex("^[A-Za-z0-9_][A-Za-z0-9._-]*$")]
+    private static partial Regex FileNamePattern();
+
+    [GeneratedRegex("^[a-z_][a-z0-9_-]*$")]
+    private static partial Regex UserPattern();
 }

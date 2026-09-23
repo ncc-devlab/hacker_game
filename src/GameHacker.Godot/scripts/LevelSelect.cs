@@ -25,6 +25,7 @@ public partial class LevelSelect : Control
     private Button _reset = null!;
     private Label _footer = null!;
     private ConfirmationDialog _confirmReset = null!;
+    private OptionButton _difficulty = null!;
 
     private GameState State => GameState.Instance;
     private LevelDefinition? _selected;
@@ -61,6 +62,15 @@ public partial class LevelSelect : Control
         AddChild(_confirmReset);
         _confirmReset.Confirmed += () => { State.ResetProgress(); Refresh(); };
         _reset.Pressed += () => _confirmReset.PopupCentered();
+
+        // 难度只管来查岗的是哪一档管理员；放在重置按钮旁边，同属「全局设置」
+        _difficulty = new OptionButton { TooltipText = "决定来查岗的管理员有多专业。有的关卡会指定管理员，不受难度影响。" };
+        _difficulty.AddItem("简单：多半是只跑脚本的新手", (int)Difficulty.Easy);
+        _difficulty.AddItem("普通", (int)Difficulty.Normal);
+        _difficulty.AddItem("困难：常碰上细查的老手", (int)Difficulty.Hard);
+        _difficulty.Select(_difficulty.GetItemIndex((int)State.Difficulty));
+        _difficulty.ItemSelected += index => State.SetDifficulty((Difficulty)_difficulty.GetItemId((int)index));
+        _reset.AddSibling(_difficulty);
 
         _footer.Text = State.CatalogError ?? State.ProgressProblem ?? "";
 

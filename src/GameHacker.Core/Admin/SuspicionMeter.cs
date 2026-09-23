@@ -5,15 +5,20 @@ namespace GameHacker.Core.Admin;
 /// <param name="Findings">这次<b>新</b>看出来的东西，之前记过的不重复算。</param>
 /// <param name="Suspicion">这次之后的怀疑度。</param>
 /// <param name="Exposed">是否已经查实，也就是任务失败。</param>
+/// <param name="Escalated">随手看着看着够到了阈值，当场接着全查了（老手才会）。</param>
 public sealed record PatrolReport(
     string Machine,
     bool Sweep,
     IReadOnlyList<AdminCheck> Did,
     IReadOnlyList<AdminFinding> Findings,
     int Suspicion,
-    bool Exposed)
+    bool Exposed,
+    bool Escalated = false)
 {
     public bool FoundSomething => Findings.Count > 0;
+
+    /// <summary>这次查完他改掉了哪些账号的口令。</summary>
+    public IReadOnlyList<string> PasswordsChanged { get; init; } = [];
 }
 
 /// <summary>

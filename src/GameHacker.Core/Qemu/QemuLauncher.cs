@@ -46,7 +46,11 @@ public sealed record VmSpec
 }
 
 /// <summary>管理员在客户机上的账号。口令由宿主生成，只有游戏自己知道。</summary>
-public sealed record AdminAccount(string User, string Password);
+/// <param name="RootPassword">
+/// 这台机器 root 的口令，也由宿主生成。给了才会设：管理员要改别人的口令时得以 root 登录
+/// （客户机的 busybox 没有 setuid，su / passwd 在普通账号下用不了）。
+/// </param>
+public sealed record AdminAccount(string User, string Password, string? RootPassword = null);
 
 /// <summary>一块网卡。</summary>
 /// <param name="Mac">形如 52:54:00:00:01:00。</param>
@@ -138,6 +142,7 @@ public sealed class QemuLauncher : IAsyncDisposable, IDisposable
         // 账号和口令经 cmdline 传给客户机 init。真的 /proc/cmdline 已经被 m0_disguise
         // 盖掉，玩家在客户机里读到的是伪造的那份
         string adminArg = spec.Admin is null ? "" : $" m0.admin={spec.Admin.User}:{spec.Admin.Password}";
+        if (spec.Admin?.RootPassword is { } rootPassword) adminArg += $" m0.rootpw={rootPassword}";
 
         var args = new List<string>
         {

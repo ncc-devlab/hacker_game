@@ -96,6 +96,12 @@ m0_start_admin_tty() {
         chown -R "$_user" "/home/$_user" 2>/dev/null
     fi
 
+    # root 口令（m0.rootpw）。老手管理员起了疑心会改掉玩家手上那个账号的口令，
+    # 改别人的口令要 root —— 这套 busybox 没有 setuid，su 在普通账号下用不了，
+    # 所以他从同一个 ttyS2 以 root 登录。不给就不设，root 照旧登不进来
+    _rootpw="$(m0_cmdline_get m0.rootpw)"
+    [ -n "$_rootpw" ] && echo "root:$_rootpw" | chpasswd >/dev/null 2>&1
+
     # -L 不等载波；vt100 让 login 之后的 shell 知道终端类型。
     # setsid 是必须的：getty 要自己当会话首进程才能把 tty 变成控制终端。
     # 要循环重启：管理员查完岗会 exit，getty 也跟着结束，
