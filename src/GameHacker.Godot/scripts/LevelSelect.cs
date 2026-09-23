@@ -25,6 +25,7 @@ public partial class LevelSelect : Control
     private Button _reset = null!;
     private Label _footer = null!;
     private ConfirmationDialog _confirmReset = null!;
+    private OptionButton _mode = null!;
 
     private GameState State => GameState.Instance;
     private LevelDefinition? _selected;
@@ -61,6 +62,18 @@ public partial class LevelSelect : Control
         AddChild(_confirmReset);
         _confirmReset.Confirmed += () => { State.ResetProgress(); Refresh(); };
         _reset.Pressed += () => _confirmReset.PopupCentered();
+
+        // 游玩模式全局选一次，放在重置按钮旁边，同属「全局设置」
+        _mode = new OptionButton
+        {
+            TooltipText = "新手模式给初学者，专家模式贴近实际渗透。\n来查岗的管理员有多专业也跟着模式和关卡走。",
+        };
+        _mode.AddItem("新手模式", (int)PlayMode.Novice);
+        _mode.AddItem("高级模式", (int)PlayMode.Advanced);
+        _mode.AddItem("专家模式", (int)PlayMode.Expert);
+        _mode.Select(_mode.GetItemIndex((int)State.Mode));
+        _mode.ItemSelected += index => State.SetMode((PlayMode)_mode.GetItemId((int)index));
+        _reset.AddSibling(_mode);
 
         _footer.Text = State.CatalogError ?? State.ProgressProblem ?? "";
 

@@ -29,6 +29,11 @@ public sealed class LevelProgress
 
     public IReadOnlyCollection<string> Completed => _completed;
 
+    /// <summary>
+    /// 玩家选的游玩模式。跟着存档走，但不算「进度」：重置进度不会把它改回去。
+    /// </summary>
+    public PlayMode Mode { get; set; } = PlayMode.Advanced;
+
     public bool IsCompleted(string id) => _completed.Contains(id);
 
     /// <summary>标记完成。返回 <c>false</c> 表示之前就完成过。</summary>
@@ -45,9 +50,15 @@ public sealed class LevelProgress
     public IEnumerable<string> MissingRequirements(LevelDefinition level) =>
         level.Requires.Where(r => !IsCompleted(r));
 
+    private static readonly JsonSerializerOptions Json = new()
+    {
+        WriteIndented = true,
+        PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
+        Converters = { new System.Text.Json.Serialization.JsonStringEnumConverter(JsonNamingPolicy.KebabCaseLower) },
+    };
+
     public string ToJson() => JsonSerializer.Serialize(
-        new Dto(FormatVersion, [.. _completed.Order(StringComparer.Ordinal)]),
-        new JsonSerializerOptions { WriteIndented = true, PropertyNamingPolicy = JsonNamingPolicy.CamelCase });
+        new Dto(FormatVersion, [.. _completed.Order(StringComparer.Ordinal)], Mode), Json);
 
     /// <summary>
     /// 从存档文本恢复。存档坏了不抛异常而是返回空进度，并在 <paramref name="problem"/>
@@ -59,12 +70,12 @@ public sealed class LevelProgress
         if (string.IsNullOrWhiteSpace(json)) return new LevelProgress();
         try
         {
-            var dto = JsonSerializer.Deserialize<Dto>(json,
-                new JsonSerializerOptions { PropertyNamingPolicy = JsonNamingPolicy.CamelCase });
+            var dto = JsonSerializer.Deserialize<Dto>(json, Json);
             if (dto is null) { problem = "存档内容为空"; return new LevelProgress(); }
             if (dto.Version > FormatVersion)
                 problem = $"存档版本 {dto.Version} 比游戏新（{FormatVersion}），按能读懂的部分加载";
-            return new LevelProgress(dto.Completed ?? []);
+            // 老存档没有这个字段，按高级模式 —— 第一版做的就是这一档
+            return new LevelProgress(dto.Completed ?? []) { Mode = dto.Mode ?? PlayMode.Advanced };
         }
         catch (JsonException ex)
         {
@@ -91,5 +102,5 @@ public sealed class LevelProgress
         return File.Exists(path) ? FromJson(File.ReadAllText(path), out problem) : new LevelProgress();
     }
 
-    private sealed record Dto(int Version, List<string>? Completed);
+    private sealed record Dto(int Version, List<string>? Completed, PlayMode? Mode = null);
 }

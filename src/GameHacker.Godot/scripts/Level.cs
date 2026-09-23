@@ -47,6 +47,7 @@ public partial class Level : Control
     private AdminAgent? _admin;
     private TtySession? _adminTty;
     private AdminAccount? _adminAccount;
+    private AdminSkill _adminSkill;
     private readonly System.Threading.CancellationTokenSource _adminCts = new();
 
     // --- 客户机状态探查 ---
@@ -82,6 +83,10 @@ public partial class Level : Control
         if (level.Admin is { } adminDefinition)
         {
             _adminAccount = new AdminAccount(adminDefinition.User, NewPassword());
+            // 这一局来的是谁：关卡指定了就是那一档，否则按这一关在当前模式下的概率抽
+            _adminSkill = GameState.ForcedAdminSkill
+                          ?? AdminSkillOdds.Roll(GameState.Instance.Mode, adminDefinition, new Random());
+            GD.Print($"[level] 管理员 {adminDefinition.User}：{SkillName(_adminSkill)}（{GameState.Instance.Mode} 模式）");
             // 高手模式（visibility: hidden）下界面上什么都不说，
             // 玩家只能自己从机器上看出他来过
             _adminPanel.Visible = adminDefinition.Visibility == AdminVisibility.Shown;
@@ -341,7 +346,7 @@ public partial class Level : Control
         }
 
         _adminTty = new TtySession(session.AdminTty);
-        _admin = new AdminAgent(definition, _adminAccount, _adminTty);
+        _admin = new AdminAgent(definition, _adminAccount, _adminTty, skill: _adminSkill);
         // 两个事件都在后台线程上触发，碰界面之前先回主线程
         _admin.ActivityChanged += _ => Callable.From(ShowAdmin).CallDeferred();
         _admin.PatrolCompleted += report => Callable.From(() => OnPatrolCompleted(report)).CallDeferred();
@@ -354,13 +359,23 @@ public partial class Level : Control
     private void OnPatrolCompleted(PatrolReport report)
     {
         if (_closing || _admin is null) return;
+        GD.Print($"[admin] {SkillName(_admin.Skill)}查岗 {report.Machine}：{string.Join(",", report.Did)}"
+                 + $"{(report.Escalated ? "（当场全查）" : report.Sweep ? "（彻底检查）" : "")}，"
+                 + $"新发现 {report.Findings.Count} 处，怀疑度 {report.Suspicion}/{_admin.ExposedAt}"
+                 + (report.PasswordsChanged.Count > 0 ? $"，改了 {string.Join(",", report.PasswordsChanged)} 的口令" : ""));
         ShowAdmin();
         // 「隐蔽」那一步等的就是他的结论：他查了一遍什么都没发现，才算没被注意到
         _run.Observe(report);
         if (report.FoundSomething && _admin.Visibility == AdminVisibility.Shown)
-            SetStatus(report.Sweep
+            SetStatus(report.Escalated
+                ? $"{_adminAccount!.User} 看出了不对，当场把 {report.Machine} 从头查了一遍"
+                : report.Sweep
                 ? $"{_adminAccount!.User} 把 {report.Machine} 从头查了一遍"
                 : $"{_adminAccount!.User} 在 {report.Machine} 上注意到了什么", Colors.Orange);
+        // 口令被改是实打实的后果：玩家下次登录就进不去了。隐身模式下不说，让他自己撞上
+        if (report.PasswordsChanged.Count > 0 && _admin.Visibility == AdminVisibility.Shown)
+            SetStatus($"{_adminAccount!.User} 改掉了 {string.Join("、", report.PasswordsChanged)} 的口令 —— "
+                      + "你手上的登录方式失效了", Colors.Orange);
         if (report.Exposed) OnExposed();
     }
 
@@ -397,12 +412,15 @@ public partial class Level : Control
         if (!_adminPanel.Visible) return;
 
         string machine = _admin.Machine;
+        string who = $"{_adminAccount!.User}（{SkillName(_admin.Skill)}）";
         _adminStatus.Text = _admin.Activity switch
         {
-            AdminActivity.LoggingIn => $"{_adminAccount!.User} 正在登录 {machine}",
-            AdminActivity.Checking => $"{_adminAccount!.User} 登录着 {machine}，在随手翻",
-            AdminActivity.Sweeping => $"{_adminAccount!.User} 起了疑心，正在把 {machine} 从头查一遍",
-            _ => $"{_adminAccount!.User} 不在 {machine} 上。下次约在 {Countdown(_admin.TimeToNextPatrol)} 后",
+            AdminActivity.LoggingIn => $"{who} 正在登录 {machine}",
+            AdminActivity.Checking => _admin.Skill == AdminSkill.Junior
+                ? $"{who} 登录着 {machine}，在跑他的巡检脚本"
+                : $"{who} 登录着 {machine}，在随手翻",
+            AdminActivity.Sweeping => $"{who} 起了疑心，正在把 {machine} 从头查一遍",
+            _ => $"{who} 不在 {machine} 上。下次约在 {Countdown(_admin.TimeToNextPatrol)} 后",
         };
         _adminStatus.Modulate = _admin.Activity switch
         {
@@ -427,6 +445,13 @@ public partial class Level : Control
                 CustomMinimumSize = new Vector2(240, 0),
             });
     }
+
+    private static string SkillName(AdminSkill skill) => skill switch
+    {
+        AdminSkill.Junior => "实习运维",
+        AdminSkill.Senior => "资深运维",
+        _ => "运维",
+    };
 
     private static string Countdown(TimeSpan left) =>
         left <= TimeSpan.Zero ? "随时" : $"{(int)left.TotalMinutes}:{left.Seconds:00}";

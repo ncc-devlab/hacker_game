@@ -14,6 +14,7 @@ mountpoint -q /run || mount -t tmpfs tmpfs /run 2>/dev/null
 m0_mount_pty
 m0_setup_net
 m0_start_agent
+m0_setup_sudo
 m0_start_admin_tty
 m0_start_services
 m0_place_content

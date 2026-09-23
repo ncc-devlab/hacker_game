@@ -36,6 +36,21 @@ public partial class GameState : Node
     /// <summary>正在玩（或将要进入）的关卡。</summary>
     public LevelDefinition? Current { get; private set; }
 
+    /// <summary>
+    /// 游玩模式（新手 / 高级 / 专家）。全局选一次；来查岗的管理员有多专业跟着它和关卡走，
+    /// 见 <see cref="GameHacker.Core.Admin.AdminSkillOdds"/>。
+    /// </summary>
+    public PlayMode Mode => Progress.Mode;
+
+    /// <summary>
+    /// 开发用：<c>GAMEHACKER_ADMIN_SKILL=junior|regular|senior</c> 指定来的是哪一档管理员，
+    /// 盖过游玩模式与关卡设定，方便挨个看三档的表现。
+    /// </summary>
+    public static GameHacker.Core.Admin.AdminSkill? ForcedAdminSkill =>
+        Enum.TryParse<GameHacker.Core.Admin.AdminSkill>(
+            System.Environment.GetEnvironmentVariable("GAMEHACKER_ADMIN_SKILL"), ignoreCase: true, out var skill)
+            ? skill : null;
+
     /// <summary>编辑器里调试用：无视解锁条件。导出版本恒为 false。</summary>
     public bool IgnoreLocks { get; set; }
 
@@ -137,6 +152,19 @@ public partial class GameState : Node
     public void ResetProgress()
     {
         Progress.Reset();
+        SaveProgress();
+    }
+
+    public void SetMode(PlayMode mode)
+    {
+        if (Progress.Mode == mode) return;
+        Progress.Mode = mode;
+        SaveProgress();
+    }
+
+    private void SaveProgress()
+    {
+        if (IsAutomated) return;
         try { Progress.Save(ProjectSettings.GlobalizePath(ProgressPath)); }
         catch (Exception ex) { GD.PushError($"[levels] 存档写不进去: {ex.Message}"); }
     }

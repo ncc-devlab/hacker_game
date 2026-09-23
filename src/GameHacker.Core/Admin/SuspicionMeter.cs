@@ -6,6 +6,7 @@ namespace GameHacker.Core.Admin;
 /// <param name="Seen">这次一共看到多少处不对劲，包括之前就记过的。</param>
 /// <param name="Suspicion">这次之后的怀疑度。</param>
 /// <param name="Exposed">是否已经查实，也就是任务失败。</param>
+/// <param name="Escalated">随手看着看着够到了阈值，当场接着全查了（资深运维才会）。</param>
 public sealed record PatrolReport(
     string Machine,
     bool Sweep,
@@ -13,7 +14,8 @@ public sealed record PatrolReport(
     IReadOnlyList<AdminFinding> Findings,
     int Seen,
     int Suspicion,
-    bool Exposed)
+    bool Exposed,
+    bool Escalated = false)
 {
     /// <summary>这次<b>新</b>看出了东西。界面上那句「他注意到了什么」看的是它。</summary>
     public bool FoundSomething => Findings.Count > 0;
@@ -27,6 +29,9 @@ public sealed record PatrolReport(
     /// 「玩家有没有全身而退」要问的是这一个：痕迹还在，就不算没被注意到。
     /// </remarks>
     public bool Clean => Seen == 0;
+
+    /// <summary>这次查完他改掉了哪些账号的口令。</summary>
+    public IReadOnlyList<string> PasswordsChanged { get; init; } = [];
 }
 
 /// <summary>

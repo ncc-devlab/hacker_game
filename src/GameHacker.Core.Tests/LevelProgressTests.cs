@@ -77,4 +77,26 @@ public class LevelProgressTests
             if (Directory.Exists(dir)) Directory.Delete(dir, recursive: true);
         }
     }
+
+    [Fact]
+    public void 游玩模式跟着存档走_重置进度不动它()
+    {
+        var progress = new LevelProgress(["lab"]) { Mode = PlayMode.Expert };
+        var loaded = LevelProgress.FromJson(progress.ToJson(), out string? problem);
+        Assert.Null(problem);
+        Assert.Equal(PlayMode.Expert, loaded.Mode);
+        Assert.Contains("\"expert\"", progress.ToJson());
+
+        loaded.Reset();
+        Assert.Equal(PlayMode.Expert, loaded.Mode);
+    }
+
+    [Fact]
+    public void 老存档没有模式时按高级模式()
+    {
+        var loaded = LevelProgress.FromJson("""{ "version": 1, "completed": ["lab"] }""", out string? problem);
+        Assert.Null(problem);
+        Assert.Equal(PlayMode.Advanced, loaded.Mode);
+        Assert.True(loaded.IsCompleted("lab"));
+    }
 }

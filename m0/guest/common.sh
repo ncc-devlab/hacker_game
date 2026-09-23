@@ -141,6 +141,19 @@ m0_start_services() {
     logger -t init "system boot: $M0_HOST"
 }
 
+# sudo 是构建时从 apk 拷进来的，文件属主是打包的那个普通用户，也没有 setuid 位 ——
+# 非 root 打包给不了这些。sudo 对这件事很较真：本体、插件、sudoers 不归 root 就拒绝干活。
+# 要在建管理员账号之前跑：他的 sudoers 规则写进 /etc/sudoers.d
+m0_setup_sudo() {
+    [ -f /usr/bin/sudo ] || return 0
+    mkdir -p /etc/sudoers.d          # 构建时只拷文件，空目录不在包里
+    chown -R root:root /usr/bin/sudo /usr/bin/sudoedit /usr/bin/sudoreplay /usr/sbin/visudo \
+        /usr/lib/sudo /etc/sudoers /etc/sudoers.d 2>/dev/null
+    chmod 4755 /usr/bin/sudo
+    chmod 0440 /etc/sudoers
+    chmod 0750 /etc/sudoers.d
+}
+
 # 管理员专用 tty（ttyS2）。
 #
 # 游戏侧的「管理员」是个假人，但他登录这台机器的方式是真的：真的 getty、
@@ -167,6 +180,14 @@ m0_start_admin_tty() {
         adduser -D -h "/home/$_user" -s /bin/sh "$_user" >/dev/null 2>&1
         echo "$_user:$_pw" | chpasswd >/dev/null 2>&1
         chown -R "$_user" "/home/$_user" 2>/dev/null
+    fi
+
+    # 他是这台机器的运维：sudo 要口令、什么都能干。资深运维起了疑心会用
+    # sudo passwd 改掉玩家手上那个账号的口令；反过来，玩家要是弄到了他的口令，
+    # sudo -l 一看就知道这是条提权的路
+    if [ -f /usr/bin/sudo ]; then
+        echo "$_user ALL=(ALL:ALL) ALL" > "/etc/sudoers.d/$_user"
+        chmod 0440 "/etc/sudoers.d/$_user"
     fi
 
     # -L 不等载波；vt100 让 login 之后的 shell 知道终端类型。
