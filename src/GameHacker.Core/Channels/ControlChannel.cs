@@ -117,7 +117,7 @@ public sealed class ControlChannel : IAsyncDisposable
         }
     }
 
-    private Channel<JsonObject> Subscribe()
+    private Channel<JsonObject> Subscribe(bool history = true)
     {
         var inbox = Channel.CreateUnbounded<JsonObject>(
             new UnboundedChannelOptions { SingleReader = true, SingleWriter = false });
@@ -126,7 +126,7 @@ public sealed class ControlChannel : IAsyncDisposable
         {
             // 先补发历史，再挂进订阅列表 —— 两步都在锁里，
             // 保证既不漏事件也不会重复收到同一条。
-            foreach (var ev in _history) inbox.Writer.TryWrite(ev);
+            if (history) foreach (var ev in _history) inbox.Writer.TryWrite(ev);
             _subscribers.Add(inbox);
         }
         return inbox;
@@ -143,26 +143,32 @@ public sealed class ControlChannel : IAsyncDisposable
         WaitEventAsync("ready", timeout, cancellationToken);
 
     /// <summary>等一条指定类型的事件。订阅之前已经发生过的也算。</summary>
-    public async Task<JsonObject> WaitEventAsync(
-        string eventName, TimeSpan timeout, CancellationToken cancellationToken = default)
+    public Task<JsonObject> WaitEventAsync(
+        string eventName, TimeSpan timeout, CancellationToken cancellationToken = default) =>
+        WaitAsync(ev => ev["ev"]?.GetValue<string>() == eventName, history: true,
+                  eventName, timeout, cancellationToken);
+
+    private async Task<JsonObject> WaitAsync(
+        Func<JsonObject, bool> match, bool history, string what,
+        TimeSpan timeout, CancellationToken cancellationToken)
     {
         using var cts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
         cts.CancelAfter(timeout);
 
-        var inbox = Subscribe();
+        var inbox = Subscribe(history);
         try
         {
             await foreach (var ev in inbox.Reader.ReadAllAsync(cts.Token).ConfigureAwait(false))
-                if (ev["ev"]?.GetValue<string>() == eventName)
+                if (match(ev))
                     return ev;
 
-            throw new TimeoutException($"等待事件 {eventName} 时通道已关闭");
+            throw new TimeoutException($"等待事件 {what} 时通道已关闭");
         }
         catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
         {
             // 是我们自己的超时，不是调用方取消。换成 TimeoutException，
             // 否则上层只看到一句 "The operation was canceled"，分不清是哪种。
-            throw new TimeoutException($"等待事件 {eventName} 超时（{timeout.TotalSeconds:0}s）");
+            throw new TimeoutException($"等待事件 {what} 超时（{timeout.TotalSeconds:0}s）");
         }
         finally
         {
@@ -171,17 +177,28 @@ public sealed class ControlChannel : IAsyncDisposable
     }
 
     /// <summary>
-    /// 发一条命令并等待指定类型的应答，期间按 <see cref="ResendInterval"/> 重发。
+    /// 发一条命令并等待应答，期间按 <see cref="ResendInterval"/> 重发。
     /// </summary>
+    /// <param name="match">
+    /// 哪条事件才算这次的应答。同一种事件名下还分好几样时要给
+    /// （比如 probe 既能问进程表也能问文件），否则会认领上一次的答复。
+    /// </param>
+    /// <remarks>
+    /// <b>不看历史。</b> 订阅在发命令之前建立，所以应答一定在之后到达；
+    /// 而补发历史会让这次请求当场认领上一次同名的答复 —— 越问越旧。
+    /// 补发只对 ready 这种只发一次的信标有意义。
+    /// </remarks>
     public async Task<JsonObject> RequestAsync(
         string command, string expectedEvent, TimeSpan timeout,
-        CancellationToken cancellationToken = default)
+        CancellationToken cancellationToken = default, Func<JsonObject, bool>? match = null)
     {
         using var cts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
         cts.CancelAfter(timeout);
 
         var payload = Encoding.UTF8.GetBytes(command + "\n");
-        var waiter = WaitEventAsync(expectedEvent, timeout, cts.Token);
+        var waiter = WaitAsync(
+            ev => ev["ev"]?.GetValue<string>() == expectedEvent && (match is null || match(ev)),
+            history: false, expectedEvent, timeout, cts.Token);
 
         while (!waiter.IsCompleted)
         {
@@ -195,6 +212,30 @@ public sealed class ControlChannel : IAsyncDisposable
     /// <summary>把终端尺寸转发给客户机。裸串口没有 TIOCSWINSZ，只能走这里。</summary>
     public Task<JsonObject> ResizeAsync(int rows, int columns, CancellationToken cancellationToken = default) =>
         RequestAsync($"resize {rows} {columns}", "resize", TimeSpan.FromSeconds(15), cancellationToken);
+
+    /// <summary>
+    /// 问客户机一项内部状态，返回原样文本。
+    /// </summary>
+    /// <remarks>
+    /// <para>只读，而且只有客户机认得的那几样（<c>ps</c> / <c>forward</c> / <c>file</c>，
+    /// 见 <c>m0/guest/common.sh</c> 的 <c>m0_probe</c>）。这里刻意<b>不做</b>
+    /// 「宿主发一条 shell 命令、客户机执行」的通用形式 —— 那等于在客户机里开了一个
+    /// 玩家看不见的 root 后门，一旦判定逻辑需要什么就随手加一条命令，
+    /// 到最后谁也说不清这条通道能做什么。</para>
+    /// <para>内容按 base64 回来：进程表是多行的，命令行里什么字符都可能有。</para>
+    /// </remarks>
+    public async Task<string> ProbeAsync(
+        string what, string? argument = null, CancellationToken cancellationToken = default)
+    {
+        string command = argument is null ? $"probe {what}" : $"probe {what} {argument}";
+        var ev = await RequestAsync(command, "probe", TimeSpan.FromSeconds(30), cancellationToken,
+                                    // 认准问的是哪一样，否则会认领上一次别的探查的答复
+                                    ev => ev["what"]?.GetValue<string>() == what).ConfigureAwait(false);
+        string encoded = ev["b64"]?.GetValue<string>() ?? "";
+        if (encoded.Length == 0) return "";
+        try { return Encoding.UTF8.GetString(Convert.FromBase64String(encoded)); }
+        catch (FormatException) { return ""; }
+    }
 
     /// <summary>让客户机 ping 一个地址，返回判定结果。</summary>
     public async Task<bool> PingAsync(string target, CancellationToken cancellationToken = default)

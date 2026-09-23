@@ -43,7 +43,38 @@ public sealed record VmSpec
     /// 游戏里应当显式给每台机器挑一个预设。
     /// </remarks>
     public HardwarePersona Persona { get; init; } = HardwarePersona.None;
+
+    /// <summary>默认网关。内网里的机器要有它，回给外面的包才知道往哪走。</summary>
+    public string? Gateway { get; init; }
+
+    /// <summary>开机时放在这台机器上的文件。关卡的目标文件就是这么来的。</summary>
+    public IReadOnlyList<GuestFile> Files { get; init; } = [];
+
+    /// <summary>这台机器上对外开的服务。</summary>
+    public IReadOnlyList<GuestService> Services { get; init; } = [];
 }
+
+/// <summary>
+/// 开机时写进客户机的一个文件。
+/// </summary>
+/// <remarks>
+/// 内容经内核 cmdline 传（base64，免得空格和引号在 cmdline 里散架），
+/// 而 <c>/proc/cmdline</c> 已经被 <c>m0_disguise</c> 盖掉 ——
+/// 玩家在客户机里读不到这份原文，只能真的去内网把文件取回来。
+/// </remarks>
+public sealed record GuestFile(string Path, string Text);
+
+/// <summary>
+/// 客户机上一个对外开的端口。
+/// </summary>
+/// <param name="Port">监听端口。</param>
+/// <param name="File">连上来就把这个文件吐给对方。</param>
+/// <remarks>
+/// 内网里那台老机器上的「备份服务」就是这么一个东西：没有认证、连上就给，
+/// 玩家扫到这个端口、连上去，文件就到手了。实现是客户机上真的 busybox
+/// <c>nc -lk</c>，所以它在 <c>ps</c> 里看得见、能被杀掉、也能被玩家自己拿来用。
+/// </remarks>
+public sealed record GuestService(int Port, string File);
 
 /// <summary>管理员在客户机上的账号。口令由宿主生成，只有游戏自己知道。</summary>
 public sealed record AdminAccount(string User, string Password);
@@ -138,6 +169,12 @@ public sealed class QemuLauncher : IAsyncDisposable, IDisposable
         // 账号和口令经 cmdline 传给客户机 init。真的 /proc/cmdline 已经被 m0_disguise
         // 盖掉，玩家在客户机里读到的是伪造的那份
         string adminArg = spec.Admin is null ? "" : $" m0.admin={spec.Admin.User}:{spec.Admin.Password}";
+        string gatewayArg = spec.Gateway is null ? "" : $" m0.gw={spec.Gateway}";
+        // 关卡摆在机器上的东西：文件内容走 base64，服务是「端口:文件」
+        string fileArg = string.Concat(spec.Files.Select((f, i) =>
+            $" m0.file{i}={f.Path}:{Convert.ToBase64String(Encoding.UTF8.GetBytes(f.Text))}"));
+        string serviceArg = string.Concat(spec.Services.Select((s, i) =>
+            $" m0.serve{i}={s.Port}:{s.File}"));
 
         var args = new List<string>
         {
@@ -148,7 +185,8 @@ public sealed class QemuLauncher : IAsyncDisposable, IDisposable
             "-kernel", spec.KernelPath,
             "-initrd", spec.InitrdPath,
             "-append", $"console=ttyS0 quiet loglevel=3 tsc=unstable "
-                       + $"m0.host={spec.Name}{ipArg}{rootArg}{personaArg}{adminArg}",
+                       + $"m0.host={spec.Name}{ipArg}{gatewayArg}{rootArg}{personaArg}{adminArg}"
+                       + $"{fileArg}{serviceArg}",
             "-chardev", chardev("con", consolePort), "-serial", "chardev:con",
             "-chardev", chardev("ctl", controlPort), "-serial", "chardev:ctl",
             "-qmp", $"tcp:127.0.0.1:{qmpPort},server=on,wait=off",

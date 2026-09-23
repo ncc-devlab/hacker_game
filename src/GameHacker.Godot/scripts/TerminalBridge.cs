@@ -36,6 +36,9 @@ public sealed partial class TerminalBridge : Node
     /// <summary>终端尺寸变化时会经控制通道下发 resize，这里报告结果。</summary>
     public event Action<int, int>? Resized;
 
+    /// <summary>玩家在这个终端里按下了回车。</summary>
+    public event Action? PlayerSubmitted;
+
     public void Attach(Control terminal, SerialChannel serial, ControlChannel? control = null)
     {
         _terminal = terminal;
@@ -85,7 +88,16 @@ public sealed partial class TerminalBridge : Node
     }
 
     /// <summary>主线程：玩家击键，以及 libtsm 对 DSR/DA 的应答。</summary>
-    private void OnTerminalData(byte[] data) => _ = _serial.SendAsync(data);
+    private void OnTerminalData(byte[] data)
+    {
+        _ = _serial.SendAsync(data);
+        // 玩家按下回车 = 他刚让这台机器做了点什么。
+        // 任务判定拿这个当「该去看一眼客户机状态了」的信号 ——
+        // 只是触发时机，判定本身还是看状态，不看他敲了什么（也确实看不到：
+        // 这里是一串按键字节，连行内容都没拼出来）
+        if (System.Array.IndexOf(data, (byte)'\r') >= 0 || System.Array.IndexOf(data, (byte)'\n') >= 0)
+            PlayerSubmitted?.Invoke();
+    }
 
     private void OnTerminalResized(Vector2I size)
     {

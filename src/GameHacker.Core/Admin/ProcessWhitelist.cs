@@ -33,6 +33,12 @@ public sealed class ProcessWhitelist
         "/sbin/getty*",
         "ps*",
         "udhcpc*",
+        // 判定器自己探查时用的那几样（m0_probe）。不放行的话，管理员会把
+        // 判定器的动作当成玩家的痕迹举报 —— 玩家会为自己没做过的事被抓
+        "find*",
+        "xargs*",
+        "sha256sum*",
+        "cat*",
     ];
 
     private readonly List<(string Pattern, Regex Matcher)> _patterns;

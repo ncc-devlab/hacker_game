@@ -49,6 +49,10 @@ public partial class Level : Control
     private AdminAccount? _adminAccount;
     private readonly System.Threading.CancellationTokenSource _adminCts = new();
 
+    // --- 客户机状态探查 ---
+    private int _probing;        // 同一时刻只许有一次探查在飞
+    private int _probeAgain;     // 飞行期间又来了触发
+
     public override void _Ready()
     {
         _status = GetNode<Label>("%Status");
@@ -89,6 +93,9 @@ public partial class Level : Control
         _run.Completed += () => _completed.TrySetResult();
         // 交换机转发线程上触发；LevelRun 自己加锁，UI 更新再倒回主线程
         _packetLog.PacketCaptured += _run.Observe;
+        // 文件是经网络过来的：玩家敲完回车之后它还要传一会儿，
+        // 所以网络上有动静也算一次「该去看看了」
+        _packetLog.PacketCaptured += _ => NudgeProbe();
 
         BuildMachinePanes();
         ShowSteps();
@@ -156,6 +163,9 @@ public partial class Level : Control
             await Task.WhenAll(_sessions.Select(s => s.WaitReadyAsync(boot)));
             if (_closing) return;
 
+            // 玩家在任何一台机器上敲了回车，就去看一眼这一步要看的状态
+            foreach (var session in _sessions) session.Bridge.PlayerSubmitted += NudgeProbe;
+
             SetStatus($"{_sessions.Count} 台机器就绪");
             _terminals[0].GrabFocus();
             StartAdmin();
@@ -190,6 +200,9 @@ public partial class Level : Control
                 .ToList(),
             Admin = _level.Admin?.Machine == m.Name ? _adminAccount : null,
             MemoryMegabytes = m.Memory,
+            Gateway = m.Gateway,
+            Files = m.Files.Select(f => new GuestFile(f.Path, f.Text)).ToList(),
+            Services = m.Services.Select(x => new GuestService(x.Port, x.File)).ToList(),
             // 关卡里不写回镜像，保持基础镜像干净。
             // 真正的存档走 qcow2 backing file + user:// 下的 overlay。
             Ephemeral = m.Disk is not null,
@@ -226,6 +239,55 @@ public partial class Level : Control
         };
     }
 
+    /// <summary>
+    /// 去问一眼客户机：当前这一步要看什么状态，就问什么。
+    /// </summary>
+    /// <remarks>
+    /// <para><b>这不是轮询。</b> 只有真的发生了可能改变状态的事才会调到这里
+    /// （玩家敲了回车、交换机上过了包、管理员查完一次岗），而且当前这一步
+    /// 不看客户机内部状态时（<see cref="LevelRun.Wanted"/> 为 null）一次也不问。</para>
+    /// <para>同一时刻只许有一次探查在飞：每次探查都要在客户机上真跑几条命令，
+    /// 一串按键触发一串探查的话，玩家自己 <c>ps</c> 的时候就会看见判定器在他机器上踱步。
+    /// 飞行期间来的触发记一笔，落地后补做一次，免得漏掉最后那一下。</para>
+    /// </remarks>
+    private void NudgeProbe()
+    {
+        if (System.Threading.Interlocked.Exchange(ref _probing, 1) == 1)
+        {
+            System.Threading.Volatile.Write(ref _probeAgain, 1);
+            return;
+        }
+        _ = ProbeAsync();
+    }
+
+    private async Task ProbeAsync()
+    {
+        try
+        {
+            do
+            {
+                System.Threading.Volatile.Write(ref _probeAgain, 0);
+                // 等玩家那条命令自己跑完，再看结果
+                await Task.Delay(TimeSpan.FromSeconds(1.5), _adminCts.Token);
+                if (_closing || _run.Wanted is not { } query) continue;
+
+                var session = _sessions.FirstOrDefault(s => s.Spec.Name == query.Machine);
+                if (session is null) continue;
+                _run.Observe(await StateProbe.AskAsync(query, session.Control, _adminCts.Token));
+            }
+            while (System.Threading.Volatile.Read(ref _probeAgain) == 1 && !_closing);
+        }
+        catch (Exception ex) when (ex is OperationCanceledException or TimeoutException
+                                      or ObjectDisposedException or System.IO.IOException)
+        {
+            // 这次没问着（机器忙、关卡正在拆），不该把关卡带崩：下次触发再问
+        }
+        finally
+        {
+            System.Threading.Interlocked.Exchange(ref _probing, 0);
+        }
+    }
+
     private void OnStepCompleted(LevelStep step)
     {
         if (_closing) return;
@@ -233,6 +295,8 @@ public partial class Level : Control
         ShowSteps();
         // 玩家推进到下一步，管理员可能换一套作息和脾气
         if (_run.CurrentStep is { } next) _admin?.EnterStage(next.Id);
+        // 新的一步可能一上来就想看客户机状态（比如痕迹其实早就清干净了）
+        NudgeProbe();
         if (!_run.IsComplete)
         {
             SetStatus($"完成：{step.Title}", Colors.LightGreen);
@@ -285,6 +349,8 @@ public partial class Level : Control
     {
         if (_closing || _admin is null) return;
         ShowAdmin();
+        // 「隐蔽」那一步等的就是他的结论：他查了一遍什么都没发现，才算没被注意到
+        _run.Observe(report);
         if (report.FoundSomething && _admin.Visibility == AdminVisibility.Shown)
             SetStatus(report.Sweep
                 ? $"{_adminAccount!.User} 把 {report.Machine} 从头查了一遍"

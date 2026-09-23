@@ -147,6 +147,19 @@ public sealed partial class LevelCatalog
                 else if (ip.Equals(net.BaseAddress) || ip.Equals(Broadcast(net)))
                     Error($"{where} 是网段 {nic.Network} 的网络地址或广播地址");
             }
+            if (m.Gateway is { } gateway
+                && (!IPAddress.TryParse(gateway, out var gatewayIp)
+                    || !m.Nics.Any(n => networks.TryGetValue(n.Network, out var net) && net.Contains(gatewayIp))))
+                Error($"机器 {m.Name} 的网关 \"{gateway}\" 不在它任何一块网卡所在的网段里");
+            foreach (var f in m.Files)
+                if (!f.Path.StartsWith('/'))
+                    Error($"机器 {m.Name} 上的文件路径 \"{f.Path}\" 要写绝对路径");
+            foreach (var s in m.Services)
+            {
+                if (s.Port is < 1 or > 65535) Error($"机器 {m.Name} 的服务端口 {s.Port} 不在 1..65535");
+                if (m.Files.All(f => f.Path != s.File))
+                    Error($"机器 {m.Name} 的服务要提供 \"{s.File}\"，但这台机器上没摆这个文件");
+            }
             if (HardwarePersona.ByName(m.Persona) is null)
                 Error($"机器 {m.Name} 的人设 \"{m.Persona}\" 不存在，可选: {string.Join(", ", HardwarePersona.Presets.Select(p => p.Name))}");
             if (m.Memory < 64) Error($"机器 {m.Name} 内存 {m.Memory}MB 太小");
@@ -194,12 +207,44 @@ public sealed partial class LevelCatalog
             }
             foreach (string r in step.Check.MachineRefs)
                 if (!names.Contains(r)) Error($"步骤 {step.Id} 引用的机器 \"{r}\" 不存在");
+            foreach (string r in step.Check.NetworkRefs)
+                if (!networks.ContainsKey(r)) Error($"步骤 {step.Id} 引用的网段 \"{r}\" 不存在");
+            ValidateCheck(step, step.Check, level, Error);
         }
 
         if (level.Status == LevelStatus.Playable)
         {
             if (level.Machines.Count == 0) Error("可玩关至少要有一台机器");
             if (level.Steps.Count == 0) Error("可玩关至少要有一个步骤，否则永远完成不了");
+        }
+    }
+
+    /// <summary>检测原语自己那几个参数。写错了要在加载时就说，别等玩到那一步才发现判定永远不亮。</summary>
+    private static void ValidateCheck(LevelStep step, LevelCheck check, LevelDefinition level, Action<string> error)
+    {
+        string where = $"步骤 {step.Id} 的 check";
+        switch (check)
+        {
+            case ScanCheck scan:
+                if (scan.Hosts < 2) error($"{where}: 扫描至少要试过 2 台主机才算扫描");
+                if (scan.WithinSeconds < 1) error($"{where}: 扫描的时间窗口要大于 0 秒");
+                // 网段里装不下这么多台主机的话，这一步谁也做不出来
+                if (IPNetwork.TryParse(level.Networks.FirstOrDefault(n => n.Name == scan.Network)?.Subnet ?? "",
+                                       out var subnet)
+                    && scan.Hosts > (1L << (32 - subnet.PrefixLength)) - 2)
+                    error($"{where}: 网段 {scan.Network}（{subnet}）里根本没有 {scan.Hosts} 个可用地址");
+                break;
+            case FileCheck file:
+                if (!ShaPattern().IsMatch(file.Sha256))
+                    error($"{where}: sha256 要是 64 位十六进制，现在是 \"{file.Sha256}\"");
+                break;
+            case PatrolCheck patrol:
+                if (patrol.Patrols < 1) error($"{where}: 至少要有一次干净的查岗");
+                if (level.Admin is null) error($"{where}: 这一关没有管理员，没人来验收");
+                break;
+            case CleanCheck when level.Admin is null:
+                error($"{where}: 这一关没有管理员，白名单无从谈起");
+                break;
         }
     }
 
@@ -272,4 +317,7 @@ public sealed partial class LevelCatalog
 
     [GeneratedRegex("^[a-z0-9]+(-[a-z0-9]+)*$")]
     private static partial Regex IdPattern();
+
+    [GeneratedRegex("^[0-9a-f]{64}$")]
+    private static partial Regex ShaPattern();
 }

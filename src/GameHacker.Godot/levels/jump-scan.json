@@ -1,12 +1,12 @@
 {
-  // MVP2 的第一个实战关卡，内容还在设计。步骤先照 MVP2 文档第二节列出，检测条件待补。
+  // MVP2 的第一个实战关卡。
   // 网络：ws 只在外网，files01 只在内网，jump01 两边各一块网卡 —— 交换机按 VLAN 隔开，
   // 玩家的机器物理上够不着内网，只能经跳板机过去。
   "id": "jump-scan",
   "title": "跳板扫描",
   "track": "mission",
   "order": 0,
-  "status": "draft",
+  "status": "playable",
   "requires": ["lab-ping"],
   "summary": "借一台跳板机穿进内网，拿到文件，全身而退。",
   "briefing": "你拿到了一台跳板机的登录方式。它背后是一段你直接够不着的内网，目标文件就在里面某台机器上。\n\n管理员会不定期登录跳板机查岗。别让他发现你来过。",
@@ -16,9 +16,25 @@
   ],
   "machines": [
     { "name": "ws",      "nics": [ { "network": "outside", "ip": "10.0.0.1" } ], "persona": "workstation", "disk": "alpine-main", "memory": 512 },
+    // 跳板机不给网关：把外网和内网接起来，正是玩家要做的事
     { "name": "jump01",  "nics": [ { "network": "outside", "ip": "10.0.0.2" },
                                    { "network": "inside",  "ip": "172.16.5.1" } ], "persona": "legacy-server" },
-    { "name": "files01", "nics": [ { "network": "inside",  "ip": "172.16.5.20" } ], "persona": "legacy-server" }
+    // 内网深处那台老机器。网关指向跳板机 —— 它认得回外面的路，
+    // 所以玩家的包一旦进得来，也回得去。
+    // 备份口 9000 没有认证，连上就给：内网里这种东西不稀奇，而这正是这一关的目标。
+    {
+      "name": "files01",
+      "nics": [ { "network": "inside", "ip": "172.16.5.20" } ],
+      "persona": "legacy-server",
+      "gateway": "172.16.5.1",
+      "files": [
+        {
+          "path": "/srv/backup/ledger.txt",
+          "text": "MERIDIAN 物流 — 结算异常台账\n导出: 2031-03-14 02:11  来源: files01:/srv/backup\n\n单号        金额        经手      状态\nML-88214    412,900     hk-desk   已冲销\nML-88217    398,450     hk-desk   已冲销\nML-88231  1,204,000     hk-desk   挂起\nML-88240    987,300     hk-desk   挂起\n\n注: 以上四笔均未进总账。按 R.C. 口头指示暂不归档。\n"
+        }
+      ],
+      "services": [ { "port": 9000, "file": "/srv/backup/ledger.txt" } ]
+    }
   ],
   // 管理员：一个会查岗的人，不是巡检脚本。
   // 每次登录只随手看几样（按各自的概率抽），看到小事只是起疑；
@@ -70,14 +86,50 @@
         "schedule": { "firstPatrolSeconds": 40, "intervalSeconds": 60, "jitterSeconds": 15,
                       "minActions": 2, "maxActions": 4, "pauseMin": 1, "pauseMax": 3 },
         "suspicion": { "sweepAt": 25, "exposedAt": 100, "calmPerPatrol": 2, "sweepMultiplier": 3 }
+      },
+      // 最后一步要等他来验收，所以这里必须让他来得勤 ——
+      // 一个每两分钟才出现一次的对手，会把「等他查一遍」变成干等
+      "stealth": {
+        "schedule": { "firstPatrolSeconds": 30, "intervalSeconds": 45, "jitterSeconds": 10,
+                      "minActions": 2, "maxActions": 4, "pauseMin": 1, "pauseMax": 3 },
+        "suspicion": { "sweepAt": 25, "exposedAt": 100, "calmPerPatrol": 5, "sweepMultiplier": 3 }
       }
     }
   },
   "steps": [
-    { "id": "tunnel",  "title": "建隧道", "hint": "连上跳板机，建立通往内网的隧道。" },
-    { "id": "scan",    "title": "扫描",   "hint": "通过隧道扫描跳板机所在的内网段，找到目标。" },
-    { "id": "fetch",   "title": "拿取",   "hint": "从内网目标取得文件，复制回你的机器。" },
-    { "id": "stealth", "title": "隐蔽",   "hint": "整个过程尽量别引起管理员的注意。" },
-    { "id": "cover",   "title": "掩盖",   "hint": "清理白名单外进程留下的痕迹 —— 只删日志本身就是痕迹。" }
+    {
+      "id": "tunnel",
+      "title": "建隧道",
+      "hint": "跳板机 jump01 两头各插着一块网卡：10.0.0.2 在你这边，172.16.5.1 在内网那边。\n让它替你转发，再告诉你自己的机器「去 172.16.5.0/24 要经过它」。",
+      // 内网 VLAN 里出现源地址是 ws 的包，只可能是跳板机转过来的；
+      // 还要看到回程，否则「包进得去但回不来」也会算通过，下一步却怎么也做不出来
+      "check": { "type": "route", "from": "ws", "network": "inside" }
+    },
+    {
+      "id": "scan",
+      "title": "扫描",
+      "hint": "内网段是 172.16.5.0/24。挨个地址试过去，看哪台机器在。\n没人应答的地址也要试 —— 试出来的空白同样是情报。",
+      "check": { "type": "scan", "network": "inside", "hosts": 12, "withinSeconds": 60 }
+    },
+    {
+      "id": "fetch",
+      "title": "拿取",
+      "hint": "内网那台机器上开着一个老式备份口，连上去就把东西吐给你。\n把它存到你自己的机器上 —— 在屏幕上看一眼不算拿到。",
+      // 只认内容：存成什么名字、放哪个目录都行
+      "check": { "type": "file", "machine": "ws", "sha256": "fdf59bb6a8aec341bb029a3ac486a72fe5485dd17d87db69491a2374122d50e2" }
+    },
+    {
+      "id": "cover",
+      "title": "掩盖",
+      "hint": "你在 jump01 上动过的东西要回到原样：开着的转发、留下的进程。\n注意日志 —— 把它删掉比留着更扎眼，管理员记得上次有多少行。",
+      "check": { "type": "clean", "machine": "jump01" }
+    },
+    {
+      "id": "stealth",
+      "title": "隐蔽",
+      "hint": "剩下的事只有等：管理员会再来查一遍 jump01。\n他什么都没发现，你才算全身而退。",
+      // 让对手来验收。这一步不需要任何额外探查 —— 他本来就会按自己的节奏登录、翻看
+      "check": { "type": "patrol", "patrols": 1 }
+    }
   ]
 }

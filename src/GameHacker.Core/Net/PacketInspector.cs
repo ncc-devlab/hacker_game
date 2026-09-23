@@ -9,6 +9,48 @@ namespace GameHacker.Core.Net;
 /// </summary>
 public static class PacketInspector
 {
+    /// <summary>这一帧是不是 IPv4；是的话给出源、目的地址。</summary>
+    public static bool TryGetIpv4(byte[] frame, out IPAddress source, out IPAddress destination)
+    {
+        source = destination = IPAddress.None;
+        try
+        {
+            if (Packet.ParsePacket(LinkLayers.Ethernet, frame) is not EthernetPacket { PayloadPacket: IPv4Packet ip })
+                return false;
+            source = ip.SourceAddress;
+            destination = ip.DestinationAddress;
+            return true;
+        }
+        catch (Exception)
+        {
+            return false;
+        }
+    }
+
+    /// <summary>
+    /// 这一帧是不是 ARP；是的话给出发问的人和被问的地址。
+    /// </summary>
+    /// <remarks>
+    /// 扫描判定要靠它：扫一个网段时，绝大多数地址上根本没有机器，
+    /// 试探止步于没人应答的 ARP 询问，一个 IP 包都不会产生。
+    /// </remarks>
+    public static bool TryGetArp(byte[] frame, out IPAddress sender, out IPAddress target)
+    {
+        sender = target = IPAddress.None;
+        try
+        {
+            if (Packet.ParsePacket(LinkLayers.Ethernet, frame) is not EthernetPacket { PayloadPacket: ArpPacket arp })
+                return false;
+            sender = arp.SenderProtocolAddress;
+            target = arp.TargetProtocolAddress;
+            return true;
+        }
+        catch (Exception)
+        {
+            return false;
+        }
+    }
+
     /// <summary>这一帧是不是 ICMP echo 应答；是的话给出源、目的地址。</summary>
     public static bool TryGetIcmpEchoReply(byte[] frame, out IPAddress source, out IPAddress destination)
     {

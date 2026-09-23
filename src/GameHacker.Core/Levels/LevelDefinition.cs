@@ -1,7 +1,4 @@
-using System.Net;
-using System.Text.Json.Serialization;
 using GameHacker.Core.Admin;
-using GameHacker.Core.Net;
 
 namespace GameHacker.Core.Levels;
 
@@ -106,6 +103,36 @@ public sealed record MachineDefinition
     public string? Disk { get; init; }
 
     public int Memory { get; init; } = 256;
+
+    /// <summary>
+    /// 默认网关。内网里的机器要有它，玩家的包才回得去。
+    /// </summary>
+    /// <remarks>
+    /// 跳板机和玩家自己的机器不给 —— 把两边接起来正是玩家要做的事。
+    /// </remarks>
+    public string? Gateway { get; init; }
+
+    /// <summary>开机时摆在这台机器上的文件，关卡的目标文件就是这么来的。</summary>
+    public IReadOnlyList<FileDefinition> Files { get; init; } = [];
+
+    /// <summary>这台机器上对外开的服务。</summary>
+    public IReadOnlyList<ServiceDefinition> Services { get; init; } = [];
+}
+
+/// <summary>摆在机器上的一个文件。</summary>
+public sealed record FileDefinition
+{
+    public required string Path { get; init; }
+
+    /// <summary>文件内容。关卡文件里写什么，客户机上就是什么。</summary>
+    public required string Text { get; init; }
+}
+
+/// <summary>机器上一个对外开的端口：连上来就把这个文件吐给对方。</summary>
+public sealed record ServiceDefinition
+{
+    public required int Port { get; init; }
+    public required string File { get; init; }
 }
 
 /// <summary>一块网卡：接在哪个网段、用什么地址。</summary>
@@ -128,45 +155,4 @@ public sealed record LevelStep
     /// 这一步什么时候算完成。草稿关里可以先空着，可玩关必须每步都有。
     /// </summary>
     public LevelCheck? Check { get; init; }
-}
-
-/// <summary>
-/// 检测原语。检的是「玩家达成了什么状态」，不是「玩家敲了什么命令」
-/// （MVP2 文档第三节）。
-/// </summary>
-/// <remarks>
-/// 新原语加一个子类、挂一条 <see cref="JsonDerivedTypeAttribute"/>，
-/// 再在 <see cref="LevelRun"/> 里接上即可。关卡文件里写错类型名会在加载时报出来。
-/// </remarks>
-[JsonPolymorphic(TypeDiscriminatorPropertyName = "type",
-                 UnknownDerivedTypeHandling = JsonUnknownDerivedTypeHandling.FailSerialization)]
-[JsonDerivedType(typeof(PingCheck), "ping")]
-public abstract record LevelCheck
-{
-    /// <summary>引用到的机器名，加载时校验它们都存在。</summary>
-    public abstract IEnumerable<string> MachineRefs { get; }
-}
-
-/// <summary>
-/// <c>From</c> 成功 ping 通了 <c>To</c>：交换机上看到 <c>To</c> 回给 <c>From</c>
-/// 的 ICMP echo 应答。
-/// </summary>
-/// <remarks>
-/// 走交换机而不是让客户机自己去 ping —— 后者会在抓包面板上凭空冒出
-/// 玩家没敲过的 ping，也会让管理员（将来）看到判定器自己的流量。
-/// 看应答而不是请求：请求发出去不代表网络是通的。
-/// </remarks>
-public sealed record PingCheck : LevelCheck
-{
-    public required string From { get; init; }
-    public required string To { get; init; }
-
-    public override IEnumerable<string> MachineRefs => [From, To];
-
-    /// <param name="ipsOf">每台机器的全部地址（多网卡的机器有好几个）。</param>
-    public bool Matches(PacketRecord packet, IReadOnlyDictionary<string, IPAddress[]> ipsOf) =>
-        packet.Protocol == "ICMP"
-        && PacketInspector.TryGetIcmpEchoReply(packet.Bytes, out var source, out var destination)
-        && ipsOf[To].Contains(source)
-        && ipsOf[From].Contains(destination);
 }
