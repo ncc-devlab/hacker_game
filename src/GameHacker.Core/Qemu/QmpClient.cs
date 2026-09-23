@@ -36,7 +36,7 @@ public sealed class QmpClient : IAsyncDisposable
 
     public async Task ConnectAsync(string host, int port, CancellationToken cancellationToken = default)
     {
-        await _client.ConnectAsync(host, port, cancellationToken);
+        await _client.ConnectAsync(host, port, cancellationToken).ConfigureAwait(false);
         _client.NoDelay = true;
 
         var stream = _client.GetStream();
@@ -44,14 +44,14 @@ public sealed class QmpClient : IAsyncDisposable
         var reader = new StreamReader(stream, Encoding.UTF8);
 
         // 问候语必须先读掉，否则它会被当成某条命令的应答
-        string? greeting = await reader.ReadLineAsync(cancellationToken);
+        string? greeting = await reader.ReadLineAsync(cancellationToken).ConfigureAwait(false);
         if (greeting is null || JsonNode.Parse(greeting)?["QMP"] is null)
             throw new InvalidOperationException($"不是合法的 QMP 问候语: {greeting}");
 
         _readLoop = Task.Run(() => ReadLoopAsync(reader, _cts.Token), _cts.Token);
 
         // 握手之前 QEMU 只接受 qmp_capabilities 这一条命令
-        await ExecuteAsync("qmp_capabilities", cancellationToken: cancellationToken);
+        await ExecuteAsync("qmp_capabilities", cancellationToken: cancellationToken).ConfigureAwait(false);
     }
 
     public async Task<JsonNode?> ExecuteAsync(
@@ -70,16 +70,16 @@ public sealed class QmpClient : IAsyncDisposable
         var request = new JsonObject { ["execute"] = command, ["id"] = id };
         if (arguments is not null) request["arguments"] = arguments;
 
-        await _writer.WriteLineAsync(request.ToJsonString().AsMemory(), cancellationToken);
+        await _writer.WriteLineAsync(request.ToJsonString().AsMemory(), cancellationToken).ConfigureAwait(false);
 
-        await using (cancellationToken.Register(() => tcs.TrySetCanceled(cancellationToken)))
-            return await tcs.Task;
+        await using (cancellationToken.Register(() => tcs.TrySetCanceled(cancellationToken)).ConfigureAwait(false))
+            return await tcs.Task.ConfigureAwait(false);
     }
 
     /// <summary>虚拟机当前是否在运行（对应 QMP 的 query-status）。</summary>
     public async Task<bool> IsRunningAsync(CancellationToken cancellationToken = default)
     {
-        var result = await ExecuteAsync("query-status", cancellationToken: cancellationToken);
+        var result = await ExecuteAsync("query-status", cancellationToken: cancellationToken).ConfigureAwait(false);
         return result?["running"]?.GetValue<bool>() ?? false;
     }
 
@@ -89,7 +89,7 @@ public sealed class QmpClient : IAsyncDisposable
         {
             while (!cancellationToken.IsCancellationRequested)
             {
-                string? line = await reader.ReadLineAsync(cancellationToken);
+                string? line = await reader.ReadLineAsync(cancellationToken).ConfigureAwait(false);
                 if (line is null) break;
                 if (string.IsNullOrWhiteSpace(line)) continue;
 
@@ -131,12 +131,12 @@ public sealed class QmpClient : IAsyncDisposable
 
     public async ValueTask DisposeAsync()
     {
-        await _cts.CancelAsync();
+        await _cts.CancelAsync().ConfigureAwait(false);
         _writer?.Dispose();
         _client.Dispose();
         if (_readLoop is not null)
         {
-            try { await _readLoop; } catch (OperationCanceledException) { }
+            try { await _readLoop.ConfigureAwait(false); } catch (OperationCanceledException) { }
         }
         _cts.Dispose();
     }

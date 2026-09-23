@@ -343,8 +343,16 @@ public partial class Level : Control
             catch (Exception ex) { GD.PushError($"[level] 抓包写不出去: {ex.Message}"); }
         }
 
+        // 关虚拟机是离开关卡时唯一的大头。先把「请你自己退出」一次性发给所有机器，
+        // 再挨个收尾 —— 串行地一台台等的话，时间是相加的。
+        var watch = System.Diagnostics.Stopwatch.StartNew();
+        var quits = _sessions.Select(s => s.RequestQuitAsync()).ToArray();
+        try { Task.WaitAll(quits, QemuLauncher.QuitGrace); }
+        catch (AggregateException) { /* 失败的那台由下面的 Dispose 强杀兜底 */ }
+
         foreach (var s in _sessions) s.Dispose();
         _sessions.Clear();
         _switch?.DisposeAsync().AsTask().Wait(2000);
+        GD.Print($"[level] 离开关卡，关掉 {quits.Length} 台虚拟机共 {watch.ElapsedMilliseconds}ms");
     }
 }

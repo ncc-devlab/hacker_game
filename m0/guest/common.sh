@@ -51,6 +51,39 @@ m0_start_agent() {
     ) &
 }
 
+# 管理员专用 tty（ttyS2）。
+#
+# 游戏侧的「管理员」是个假人，但他登录这台机器的方式是真的：真的 getty、
+# 真的 login、真的账号。于是他留下的痕迹也全是真的 —— utmp/wtmp 里有会话、
+# ps 里有他的 shell、他改过的文件就是被改过。玩家能察觉管理员来过，
+# 这正是 MVP2 想要的对手感。
+#
+# 和 ttyS1 的分工：ttyS1 是给判定用的隐藏通道，玩家看不见也碰不到；
+# ttyS2 是世界之内的东西，玩家在 ps / who 里看得到它。
+#
+# 账号和口令经内核 cmdline 传进来（m0.admin=用户名:口令）。cmdline 本身
+# 已经被 m0_disguise 盖掉了，玩家读不到真的那份。
+m0_start_admin_tty() {
+    [ -c /dev/ttyS2 ] || return 0
+    M0_ADMIN="$(m0_cmdline_get m0.admin)"
+    [ -n "$M0_ADMIN" ] || return 0
+
+    _user="${M0_ADMIN%%:*}"
+    _pw="${M0_ADMIN#*:}"
+    if ! grep -q "^$_user:" /etc/passwd 2>/dev/null; then
+        # 家目录要自己建：initramfs 里没有 /home，adduser 建不出来，
+        # 登录时 login 会甩一句 "can't change directory"，一眼就不像常驻账号
+        mkdir -p "/home/$_user"
+        adduser -D -h "/home/$_user" -s /bin/sh "$_user" >/dev/null 2>&1
+        echo "$_user:$_pw" | chpasswd >/dev/null 2>&1
+        chown -R "$_user" "/home/$_user" 2>/dev/null
+    fi
+
+    # -L 不等载波；vt100 让 login 之后的 shell 知道终端类型。
+    # setsid 是必须的：getty 要自己当会话首进程才能把 tty 变成控制终端
+    setsid getty -L 115200 ttyS2 vt100 >/dev/null 2>&1 &
+}
+
 # tmux / script / 任何要开子终端的程序都需要 pty。
 # devtmpfs 不会自动建 /dev/pts 目录，不先 mkdir 的话 mount 会失败，
 # 症状是 tmux 报 "create window failed: fork failed: No such file or directory"。

@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using System.Net.Sockets;
 using System.Linq;
 using System.Text;
 using GameHacker.Core.Channels;
@@ -23,6 +24,12 @@ public sealed record VmSpec
     public required IReadOnlyList<VmNic> Nics { get; init; }
 
     /// <summary>
+    /// 管理员账号。给了就在 ttyS2 上开一个真的登录终端（getty + login），
+    /// 游戏侧的管理员假人从那里登录这台机器。
+    /// </summary>
+    public AdminAccount? Admin { get; init; }
+
+    /// <summary>
     /// 只读基础镜像 + 每存档一份 overlay 的用法下，这里传 overlay 路径。
     /// snapshot 为 true 时改由 QEMU 把写入丢进临时文件，镜像保持原样（测试用）。
     /// </summary>
@@ -37,6 +44,9 @@ public sealed record VmSpec
     /// </remarks>
     public HardwarePersona Persona { get; init; } = HardwarePersona.None;
 }
+
+/// <summary>管理员在客户机上的账号。口令由宿主生成，只有游戏自己知道。</summary>
+public sealed record AdminAccount(string User, string Password);
 
 /// <summary>一块网卡。</summary>
 /// <param name="Mac">形如 52:54:00:00:01:00。</param>
@@ -66,6 +76,9 @@ public sealed class QemuLauncher : IAsyncDisposable, IDisposable
 {
     /// <summary>一台机器最多几块网卡。客户机 init 只认到 eth3。</summary>
     public const int MaxNics = 4;
+
+    /// <summary>等 QEMU 自己退出多久，超时就强杀。实测本机一台约 30ms。</summary>
+    public static readonly TimeSpan QuitGrace = TimeSpan.FromMilliseconds(1500);
 
     private readonly string _qemuPath;
     private readonly string _trackingDirectory;
@@ -100,9 +113,13 @@ public sealed class QemuLauncher : IAsyncDisposable, IDisposable
 
     public SerialChannel? Console { get; private set; }
     public SerialChannel? Control { get; private set; }
+
+    /// <summary>管理员的登录终端（ttyS2）。<see cref="VmSpec.Admin"/> 为空时不开。</summary>
+    public SerialChannel? Admin { get; private set; }
     public int QmpPort { get; private set; }
 
-    public IReadOnlyList<string> BuildArguments(VmSpec spec, int consolePort, int controlPort, int qmpPort)
+    public IReadOnlyList<string> BuildArguments(VmSpec spec, int consolePort, int controlPort, int qmpPort,
+                                               int adminPort = 0)
     {
         string chardev(string id, int port) =>
             $"socket,id={id},host=127.0.0.1,port={port},server=off,reconnect-ms=1000";
@@ -118,6 +135,9 @@ public sealed class QemuLauncher : IAsyncDisposable, IDisposable
         string ipArg = string.Concat(spec.Nics.Select((n, i) =>
             n.IpAddress is null ? "" : $" m0.ip{(i == 0 ? "" : i.ToString())}={n.IpAddress}"));
         string personaArg = spec.Persona.KernelCmdlineFragment();
+        // 账号和口令经 cmdline 传给客户机 init。真的 /proc/cmdline 已经被 m0_disguise
+        // 盖掉，玩家在客户机里读到的是伪造的那份
+        string adminArg = spec.Admin is null ? "" : $" m0.admin={spec.Admin.User}:{spec.Admin.Password}";
 
         var args = new List<string>
         {
@@ -128,11 +148,21 @@ public sealed class QemuLauncher : IAsyncDisposable, IDisposable
             "-kernel", spec.KernelPath,
             "-initrd", spec.InitrdPath,
             "-append", $"console=ttyS0 quiet loglevel=3 tsc=unstable "
-                       + $"m0.host={spec.Name}{ipArg}{rootArg}{personaArg}",
+                       + $"m0.host={spec.Name}{ipArg}{rootArg}{personaArg}{adminArg}",
             "-chardev", chardev("con", consolePort), "-serial", "chardev:con",
             "-chardev", chardev("ctl", controlPort), "-serial", "chardev:ctl",
             "-qmp", $"tcp:127.0.0.1:{qmpPort},server=on,wait=off",
         };
+
+        // ttyS2：管理员的登录终端。没有管理员的机器就不开这个口，
+        // 客户机里连 /dev/ttyS2 都不存在，玩家看不出这台机器「本来可以被谁登录」
+        if (spec.Admin is not null)
+        {
+            args.Add("-chardev");
+            args.Add(chardev("adm", adminPort));
+            args.Add("-serial");
+            args.Add("chardev:adm");
+        }
 
         for (int i = 0; i < spec.Nics.Count; i++)
         {
@@ -174,6 +204,7 @@ public sealed class QemuLauncher : IAsyncDisposable, IDisposable
         // 先把监听口开好，再拉起 QEMU —— 顺序反了会丢开机输出
         Console = new SerialChannel();
         Control = new SerialChannel();
+        Admin = spec.Admin is null ? null : new SerialChannel();
         QmpPort = FreeTcpPort();
 
         var startInfo = new ProcessStartInfo(_qemuPath)
@@ -182,7 +213,7 @@ public sealed class QemuLauncher : IAsyncDisposable, IDisposable
             RedirectStandardError = true,
             UseShellExecute = false,
         };
-        var args = BuildArguments(spec, Console.Port, Control.Port, QmpPort);
+        var args = BuildArguments(spec, Console.Port, Control.Port, QmpPort, Admin?.Port ?? 0);
         foreach (var arg in args)
             startInfo.ArgumentList.Add(arg);
         CommandLine = _qemuPath + " " + string.Join(' ', args.Select(Quote));
@@ -244,13 +275,43 @@ public sealed class QemuLauncher : IAsyncDisposable, IDisposable
         return port;
     }
 
+    /// <summary>
+    /// 走 QMP 让 QEMU 自己退出，而不是直接杀。
+    /// </summary>
+    /// <remarks>
+    /// <para>强杀等同于拔电源：块设备来不及刷盘，Windows 上还会弹「QEMU 遇到致命错误」。
+    /// QMP 的 <c>quit</c> 是 QEMU 自己的正常退出路径，先试它，超时再强杀兜底。</para>
+    /// <para>不抛异常：关机路径上任何一步失败都只是退回强杀，不该把调用方带崩。</para>
+    /// </remarks>
+    public async Task<bool> TryQuitAsync(TimeSpan timeout, CancellationToken cancellationToken = default)
+    {
+        if (_process is null || _process.HasExited) return true;
+        try
+        {
+            using var cts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+            cts.CancelAfter(timeout);
+            await using var qmp = new QmpClient();
+            await qmp.ConnectAsync("127.0.0.1", QmpPort, cts.Token).ConfigureAwait(false);
+            await qmp.ExecuteAsync("quit", cancellationToken: cts.Token).ConfigureAwait(false);
+            await _process.WaitForExitAsync(cts.Token).ConfigureAwait(false);
+            return true;
+        }
+        catch (Exception ex) when (ex is OperationCanceledException or SocketException
+                                     or IOException or InvalidOperationException or ObjectDisposedException)
+        {
+            return false;
+        }
+    }
+
     public async ValueTask DisposeAsync()
     {
+        await TryQuitAsync(QuitGrace).ConfigureAwait(false);
         KillProcess();
-        if (_process is not null) await _process.WaitForExitAsync();
+        if (_process is not null) await _process.WaitForExitAsync().ConfigureAwait(false);
         Cleanup();
-        if (Console is not null) await Console.DisposeAsync();
-        if (Control is not null) await Control.DisposeAsync();
+        if (Console is not null) await Console.DisposeAsync().ConfigureAwait(false);
+        if (Control is not null) await Control.DisposeAsync().ConfigureAwait(false);
+        if (Admin is not null) await Admin.DisposeAsync().ConfigureAwait(false);
     }
 
     /// <summary>
@@ -268,6 +329,7 @@ public sealed class QemuLauncher : IAsyncDisposable, IDisposable
         Cleanup();
         Console?.DisposeAsync().AsTask().Wait(2000);
         Control?.DisposeAsync().AsTask().Wait(2000);
+        Admin?.DisposeAsync().AsTask().Wait(2000);
     }
 
     private void KillProcess()

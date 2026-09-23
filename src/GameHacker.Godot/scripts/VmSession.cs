@@ -73,6 +73,11 @@ public sealed class VmSession : IAsyncDisposable, IDisposable
     /// <c>_ExitTree</c> 是 <c>async void</c>，引擎不会等它，
     /// 用异步版本会在杀完 QEMU 之前就退出进程，留下吃满 CPU 的孤儿。
     /// </remarks>
+    /// <summary>
+    /// 请 QEMU 自己退出。多台机器时先把请求都发出去，再挨个等，省得串行等待。
+    /// </summary>
+    public Task<bool> RequestQuitAsync() => _launcher.TryQuitAsync(QemuLauncher.QuitGrace);
+
     public void Dispose()
     {
         _cts.Cancel();

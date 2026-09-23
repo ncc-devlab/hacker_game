@@ -99,7 +99,7 @@ public sealed class VirtualSwitch : IAsyncDisposable
     {
         using var linked = CancellationTokenSource.CreateLinkedTokenSource(
             _cts.Token, cancellationToken);
-        await Task.WhenAll(_listeners.Select(kv => AcceptLoopAsync(kv.Key, kv.Value, linked.Token)));
+        await Task.WhenAll(_listeners.Select(kv => AcceptLoopAsync(kv.Key, kv.Value, linked.Token))).ConfigureAwait(false);
     }
 
     private async Task AcceptLoopAsync(int vlan, TcpListener listener, CancellationToken token)
@@ -109,7 +109,7 @@ public sealed class VirtualSwitch : IAsyncDisposable
             TcpClient client;
             try
             {
-                client = await listener.AcceptTcpClientAsync(token);
+                client = await listener.AcceptTcpClientAsync(token).ConfigureAwait(false);
             }
             catch (OperationCanceledException) { break; }
             catch (SocketException) { break; }
@@ -140,7 +140,7 @@ public sealed class VirtualSwitch : IAsyncDisposable
                     Array.Resize(ref buffer, buffer.Length * 2);
 
                 int read = await stream.ReadAsync(
-                    buffer.AsMemory(filled, buffer.Length - filled), cancellationToken);
+                    buffer.AsMemory(filled, buffer.Length - filled), cancellationToken).ConfigureAwait(false);
                 if (read == 0) break;
                 filled += read;
 
@@ -225,7 +225,7 @@ public sealed class VirtualSwitch : IAsyncDisposable
 
     public async ValueTask DisposeAsync()
     {
-        await _cts.CancelAsync();
+        await _cts.CancelAsync().ConfigureAwait(false);
         foreach (var l in _listeners.Values) l.Stop();
         foreach (var (_, p) in _ports) p.Dispose();
         _ports.Clear();
@@ -246,12 +246,12 @@ public sealed class VirtualSwitch : IAsyncDisposable
         {
             _ = Task.Run(async () =>
             {
-                await _writeLock.WaitAsync();
+                await _writeLock.WaitAsync().ConfigureAwait(false);
                 try
                 {
                     var stream = Client.GetStream();
-                    await stream.WriteAsync(header);
-                    await stream.WriteAsync(payload);
+                    await stream.WriteAsync(header).ConfigureAwait(false);
+                    await stream.WriteAsync(payload).ConfigureAwait(false);
                 }
                 catch (Exception ex) when (ex is IOException or SocketException
                                              or ObjectDisposedException)

@@ -61,7 +61,7 @@ public sealed class SerialChannel : IAsyncDisposable
         while (!linked.IsCancellationRequested)
         {
             TcpClient client;
-            try { client = await _listener.AcceptTcpClientAsync(linked.Token); }
+            try { client = await _listener.AcceptTcpClientAsync(linked.Token).ConfigureAwait(false); }
             catch (OperationCanceledException) { break; }
             catch (SocketException) { break; }
 
@@ -74,7 +74,7 @@ public sealed class SerialChannel : IAsyncDisposable
                 {
                     while (!linked.IsCancellationRequested)
                     {
-                        int read = await _stream.ReadAsync(buffer, linked.Token);
+                        int read = await _stream.ReadAsync(buffer, linked.Token).ConfigureAwait(false);
                         if (read == 0) break;
                         Interlocked.Add(ref _bytesReceived, read);
                         DataReceived?.Invoke(buffer.AsMemory(0, read).ToArray());
@@ -100,15 +100,15 @@ public sealed class SerialChannel : IAsyncDisposable
         var stream = _stream;
         if (stream is null) return;
 
-        await _writeLock.WaitAsync(cancellationToken);
-        try { await stream.WriteAsync(data, cancellationToken); }
+        await _writeLock.WaitAsync(cancellationToken).ConfigureAwait(false);
+        try { await stream.WriteAsync(data, cancellationToken).ConfigureAwait(false); }
         catch (Exception ex) when (ex is IOException or SocketException or ObjectDisposedException) { }
         finally { _writeLock.Release(); }
     }
 
     public async ValueTask DisposeAsync()
     {
-        await _cts.CancelAsync();
+        await _cts.CancelAsync().ConfigureAwait(false);
         _listener.Stop();
         _cts.Dispose();
         _writeLock.Dispose();

@@ -173,6 +173,41 @@ public class SwitchVlanTests
     }
 
     [Fact]
+    public async Task 多层内网_每层只和自己这层通()
+    {
+        // 外网 -> 办公网 -> 核心网。层与层之间靠双网卡的跳板机连通（这里是 j1、j2），
+        // 除此之外任何两层都不能直接说上话 —— 多层内网就是这么叠出来的
+        await using var sw = new VirtualSwitch([10, 20, 30]);
+        using var cts = new CancellationTokenSource();
+        var run = sw.RunAsync(cts.Token);
+
+        await using var outside = await Nic(sw, 10, 1);
+        await using var j1Out = await Nic(sw, 10, 2);     // j1 的外网网卡
+        await using var j1In = await Nic(sw, 20, 3);      // j1 的办公网网卡
+        await using var j2Office = await Nic(sw, 20, 4);
+        await using var j2Core = await Nic(sw, 30, 5);
+        await using var core = await Nic(sw, 30, 6);
+        await SettleAsync();
+
+        await outside.SendAsync(Broadcast);
+        await Task.Delay(Quiet);
+        Assert.Equal(1, j1Out.ReceivedCount);             // 同层收得到
+        Assert.Equal(0, j1In.ReceivedCount);              // 隔一层就收不到
+        Assert.Equal(0, j2Office.ReceivedCount);
+        Assert.Equal(0, core.ReceivedCount);
+
+        // 核心网那层同理：只有同层的两块网卡互通
+        await core.SendAsync(Broadcast);
+        await Task.Delay(Quiet);
+        Assert.Equal(1, j2Core.ReceivedCount);
+        Assert.Equal(0, outside.ReceivedCount);
+        Assert.Equal(0, j2Office.ReceivedCount);
+
+        await cts.CancelAsync();
+        await run;
+    }
+
+    [Fact]
     public void VLAN_号必须合法()
     {
         Assert.Throws<ArgumentOutOfRangeException>(() => new VirtualSwitch([0]));

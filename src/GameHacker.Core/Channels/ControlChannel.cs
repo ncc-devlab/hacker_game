@@ -152,7 +152,7 @@ public sealed class ControlChannel : IAsyncDisposable
         var inbox = Subscribe();
         try
         {
-            await foreach (var ev in inbox.Reader.ReadAllAsync(cts.Token))
+            await foreach (var ev in inbox.Reader.ReadAllAsync(cts.Token).ConfigureAwait(false))
                 if (ev["ev"]?.GetValue<string>() == eventName)
                     return ev;
 
@@ -185,11 +185,11 @@ public sealed class ControlChannel : IAsyncDisposable
 
         while (!waiter.IsCompleted)
         {
-            await _serial.SendAsync(payload, cts.Token);
+            await _serial.SendAsync(payload, cts.Token).ConfigureAwait(false);
             var delay = Task.Delay(ResendInterval, cts.Token);
-            if (await Task.WhenAny(waiter, delay) == waiter) break;
+            if (await Task.WhenAny(waiter, delay).ConfigureAwait(false) == waiter) break;
         }
-        return await waiter;
+        return await waiter.ConfigureAwait(false);
     }
 
     /// <summary>把终端尺寸转发给客户机。裸串口没有 TIOCSWINSZ，只能走这里。</summary>
@@ -200,7 +200,7 @@ public sealed class ControlChannel : IAsyncDisposable
     public async Task<bool> PingAsync(string target, CancellationToken cancellationToken = default)
     {
         var ev = await RequestAsync($"ping {target}", "ping",
-                                    TimeSpan.FromSeconds(30), cancellationToken);
+                                    TimeSpan.FromSeconds(30), cancellationToken).ConfigureAwait(false);
         return ev["result"]?.GetValue<string>() == "ok";
     }
 
