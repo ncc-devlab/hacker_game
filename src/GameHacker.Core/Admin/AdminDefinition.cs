@@ -11,6 +11,8 @@ public enum AdminCheck
     Log,
     /// <summary>该在跑的服务还在不在。</summary>
     Services,
+    /// <summary>这台机器是不是在替别人转发包。</summary>
+    Forwarding,
 }
 
 /// <summary>玩家看不看得见管理员的动向。</summary>
@@ -88,6 +90,15 @@ public sealed record AdminAllow
 
     /// <summary>日志里出现就算可疑的内容（子串，不区分大小写）。</summary>
     public IReadOnlyList<string> LogRedFlags { get; init; } = [];
+
+    /// <summary>
+    /// 这台机器本来就该转发包（它真是台路由器）。默认不该。
+    /// </summary>
+    /// <remarks>
+    /// 玩家把跳板机变成路由器才穿得进内网，所以转发开着本身就是一条痕迹 ——
+    /// 而且是关不掉就带不走的那种：他每次看见都不会放松警惕。
+    /// </remarks>
+    public bool Forwarding { get; init; }
 }
 
 /// <summary>某个阶段里管理员的变化。只覆盖写了的部分。</summary>

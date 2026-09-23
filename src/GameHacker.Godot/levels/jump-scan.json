@@ -9,7 +9,7 @@
   "status": "playable",
   "requires": ["lab-ping"],
   "summary": "借一台跳板机穿进内网，拿到文件，全身而退。",
-  "briefing": "你拿到了一台跳板机的登录方式。它背后是一段你直接够不着的内网，目标文件就在里面某台机器上。\n\n管理员会不定期登录跳板机查岗。别让他发现你来过。",
+  "briefing": "你拿到了一台跳板机的登录方式。它背后是一段你直接够不着的内网，目标文件就在里面某台机器上。\n\n听说这家的运维很较真，机器上多出一点东西他都看得出来。手脚干净些。",
   "networks": [
     { "name": "outside", "vlan": 10, "subnet": "10.0.0.0/24" },
     { "name": "inside",  "vlan": 20, "subnet": "172.16.5.0/24" }
@@ -71,9 +71,12 @@
       { "id": "sessions", "check": "sessions", "chance": 0.6, "weight": 20 },
       { "id": "processes", "check": "processes", "chance": 0.5, "weight": 20 },
       { "id": "log", "check": "log", "chance": 0.5, "weight": 25 },
-      { "id": "services", "check": "services", "chance": 0.3, "weight": 30 }
+      { "id": "services", "check": "services", "chance": 0.3, "weight": 30 },
+      // 跳板机不是路由器。玩家要穿进内网就得打开转发，
+      // 这一项让「走的时候记得关回去」有了后果 —— 而任务里并不会提醒他
+      { "id": "forwarding", "check": "forwarding", "chance": 0.4, "weight": 25 }
     ],
-    "sweep": ["sessions", "processes", "log", "services"],
+    "sweep": ["sessions", "processes", "log", "services", "forwarding"],
     "stages": {
       // 玩家一开始扫内网，机房那边就会有动静，他来得更勤、更容易起疑
       "scan": {
@@ -81,8 +84,8 @@
                       "minActions": 2, "maxActions": 4, "pauseMin": 1.5, "pauseMax": 4 },
         "suspicion": { "sweepAt": 30, "exposedAt": 100, "calmPerPatrol": 3, "sweepMultiplier": 2 }
       },
-      // 到了掩盖这一步，他已经在留意这台机器了：来得最勤，一点小事就翻
-      "cover": {
+      // 东西到手之后他已经在留意这台机器了：来得更勤，一点小事就翻
+      "fetch": {
         "schedule": { "firstPatrolSeconds": 40, "intervalSeconds": 60, "jitterSeconds": 15,
                       "minActions": 2, "maxActions": 4, "pauseMin": 1, "pauseMax": 3 },
         "suspicion": { "sweepAt": 25, "exposedAt": 100, "calmPerPatrol": 2, "sweepMultiplier": 3 }
@@ -118,12 +121,6 @@
       "hint": "内网那台机器上开着一个老式备份口，连上去就把东西吐给你。\n把它存到你自己的机器上 —— 在屏幕上看一眼不算拿到。",
       // 只认内容：存成什么名字、放哪个目录都行
       "check": { "type": "file", "machine": "ws", "sha256": "fdf59bb6a8aec341bb029a3ac486a72fe5485dd17d87db69491a2374122d50e2" }
-    },
-    {
-      "id": "cover",
-      "title": "掩盖",
-      "hint": "你在 jump01 上动过的东西要回到原样：开着的转发、留下的进程。\n注意日志 —— 把它删掉比留着更扎眼，管理员记得上次有多少行。",
-      "check": { "type": "clean", "machine": "jump01" }
     },
     {
       "id": "stealth",

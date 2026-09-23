@@ -415,7 +415,9 @@ public sealed record PatrolCheck : LevelCheck
         {
             // 他什么都没看的那次不算数（阶段刚切换、动作被抽空）
             if (patrol.Did.Count == 0) return false;
-            _clean = patrol.FoundSomething ? 0 : _clean + 1;
+            // 看的是「这次什么都没看见」，不是「没有新发现」：同一处痕迹只算一次怀疑度，
+            // 他第二次看见那个还在跑的进程时新发现是空的 —— 但玩家显然没全身而退
+            _clean = patrol.Clean ? _clean + 1 : 0;
             return _clean >= check.Patrols;
         }
 

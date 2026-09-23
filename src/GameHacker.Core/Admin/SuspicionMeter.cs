@@ -3,6 +3,7 @@ namespace GameHacker.Core.Admin;
 /// <summary>一次查岗的结果。</summary>
 /// <param name="Sweep">这次是不是彻底检查。</param>
 /// <param name="Findings">这次<b>新</b>看出来的东西，之前记过的不重复算。</param>
+/// <param name="Seen">这次一共看到多少处不对劲，包括之前就记过的。</param>
 /// <param name="Suspicion">这次之后的怀疑度。</param>
 /// <param name="Exposed">是否已经查实，也就是任务失败。</param>
 public sealed record PatrolReport(
@@ -10,10 +11,22 @@ public sealed record PatrolReport(
     bool Sweep,
     IReadOnlyList<AdminCheck> Did,
     IReadOnlyList<AdminFinding> Findings,
+    int Seen,
     int Suspicion,
     bool Exposed)
 {
+    /// <summary>这次<b>新</b>看出了东西。界面上那句「他注意到了什么」看的是它。</summary>
     public bool FoundSomething => Findings.Count > 0;
+
+    /// <summary>
+    /// 这台机器这次看上去干干净净。
+    /// </summary>
+    /// <remarks>
+    /// <b>和 <see cref="FoundSomething"/> 不是一回事。</b> 同一处痕迹只算一次怀疑度，
+    /// 所以他第二次看见那个还在跑的进程时，「新发现」是空的 —— 但机器并不干净。
+    /// 「玩家有没有全身而退」要问的是这一个：痕迹还在，就不算没被注意到。
+    /// </remarks>
+    public bool Clean => Seen == 0;
 }
 
 /// <summary>

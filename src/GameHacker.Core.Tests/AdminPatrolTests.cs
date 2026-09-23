@@ -207,6 +207,22 @@ public class AdminPatrolTests
     }
 
     [Fact]
+    public void 写在后面的检查项也轮得到()
+    {
+        // 先按关卡里的顺序挑、再砍掉超出上限的部分的话，末尾那几项永远不会被查 ——
+        // 关卡作者会以为自己写的检查生效了，其实一次也没跑过
+        var definition = Definition with
+        {
+            Routine = [.. Definition.Routine.Select(a => a with { Chance = 1 })],
+            Schedule = Definition.Schedule with { MaxActions = 2 },
+        };
+        var agent = NewAgent(definition);
+        var seen = Enumerable.Range(0, 40).SelectMany(_ => agent.PickActions().Select(a => a.Id)).ToHashSet();
+
+        Assert.Equal(definition.Routine.Select(a => a.Id).ToHashSet(), seen);
+    }
+
+    [Fact]
     public void 彻底检查做全套()
     {
         var agent = NewAgent(Definition with { Sweep = ["sessions", "log"] });

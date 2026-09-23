@@ -154,7 +154,7 @@ public sealed class AdminAgent
     {
         var fresh = _meter.Record(seen, sweep ? _meter.Rules.SweepMultiplier : 1);
         if (seen.Count == 0) _meter.Calm();
-        return new PatrolReport(_definition.Machine, sweep, did, fresh, _meter.Level, _meter.Exposed);
+        return new PatrolReport(_definition.Machine, sweep, did, fresh, seen.Count, _meter.Level, _meter.Exposed);
     }
 
     /// <summary>这次随手看哪几样。按各自的概率抽，抽空了就随便挑一样。</summary>
@@ -164,19 +164,25 @@ public sealed class AdminAgent
         {
             if (_routine.Count == 0) return [];
 
-            var picked = _routine.Where(a => _random.NextDouble() < a.Chance).ToList();
-            if (picked.Count == 0) picked.Add(_routine[_random.Next(_routine.Count)]);
-            if (picked.Count > _schedule.MaxActions)
-                picked = picked.Take(_schedule.MaxActions).ToList();
-            while (picked.Count < Math.Min(_schedule.MinActions, _routine.Count))
-            {
-                var more = _routine.FirstOrDefault(a => !picked.Contains(a));
-                if (more is null) break;
-                picked.Add(more);
-            }
+            // 先把顺序打乱，后面的取舍都按这个乱序来。
+            //
+            // 这一步不只是为了「每次查的顺序不一样」（虽然那也必要：顺序固定的话
+            // 玩家数着就能算出他下一条敲什么）。更要紧的是取舍要公平 ——
+            // 先按关卡里的顺序挑、再砍掉超出上限的部分，写在后面的检查项
+            // 在动作多的时候就<b>永远轮不到</b>。实测踩到过：五项都必做、上限四项，
+            // 第五项「这机器是不是在转发」一次也没被查过。
+            var order = _routine.OrderBy(_ => _random.Next()).ToList();
 
-            // 顺序也要乱：每次都按同样的顺序查，玩家照样能数着来
-            return picked.OrderBy(_ => _random.Next()).ToList();
+            var picked = order.Where(a => _random.NextDouble() < a.Chance).ToList();
+            if (picked.Count == 0) picked.Add(order[0]);
+            foreach (var more in order)
+            {
+                if (picked.Count >= Math.Min(_schedule.MinActions, _routine.Count)) break;
+                if (!picked.Contains(more)) picked.Add(more);
+            }
+            return picked.Count > _schedule.MaxActions
+                ? picked.Take(_schedule.MaxActions).ToList()
+                : picked;
         }
     }
 

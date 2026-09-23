@@ -226,7 +226,7 @@ public class LevelCheckTests
     // --- 隐蔽 ---------------------------------------------------------------
 
     private static PatrolReport Patrol(params AdminFinding[] findings) =>
-        new("jump01", false, [AdminCheck.Processes], findings, 0, false);
+        new("jump01", false, [AdminCheck.Processes], findings, findings.Length, 0, false);
 
     [Fact]
     public void 隐蔽_要连着几次查岗都干净()
@@ -247,10 +247,26 @@ public class LevelCheckTests
     }
 
     [Fact]
+    public void 隐蔽_痕迹还在就不算干净_哪怕他这次没有新发现()
+    {
+        // 同一处痕迹只算一次怀疑度，所以他第二次看见那个还在跑的进程时「新发现」是空的。
+        // 要是照着「没有新发现」判，玩家被抓住一次之后只要干等就能过这一步
+        var run = RunWith(new PatrolCheck { Patrols = 1 });
+        var 还在跑 = new AdminFinding(AdminCheck.Processes, "nc", "", "有个不该在的进程");
+
+        run.Observe(Patrol(还在跑));
+        run.Observe(new PatrolReport("jump01", false, [AdminCheck.Processes], [], Seen: 1, 0, false));
+        Assert.Equal(0, run.CurrentIndex);
+
+        run.Observe(Patrol());
+        Assert.True(run.IsComplete);
+    }
+
+    [Fact]
     public void 隐蔽_他什么都没看的那次不算数()
     {
         var run = RunWith(new PatrolCheck { Patrols = 1 });
-        run.Observe(new PatrolReport("jump01", false, [], [], 0, false));
+        run.Observe(new PatrolReport("jump01", false, [], [], 0, 0, false));
         Assert.Equal(0, run.CurrentIndex);
     }
 

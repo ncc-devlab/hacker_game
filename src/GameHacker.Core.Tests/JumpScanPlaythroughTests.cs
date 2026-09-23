@@ -23,7 +23,7 @@ public class JumpScanPlaythroughTests
     private static readonly TimeSpan Boot = TimeSpan.FromSeconds(120);
 
     [SkippableFact]
-    public async Task 五个步骤能真的一步步走完()
+    public async Task 整关能真的一步步走完_没清的痕迹由管理员找出来()
     {
         Skip.IfNot(TestImages.GuestImagesReady, TestImages.MissingImagesReason);
 
@@ -153,25 +153,40 @@ public class JumpScanPlaythroughTests
             await Probe();
             Assert.True(Snapshot(done).Contains("fetch"), Why("拿取没判定通过"));
 
-            // --- 四、掩盖 ----------------------------------------------------
-            // 这一步一上来就该是没过的：转发还开着
-            await Probe();
-            Assert.DoesNotContain("cover", Snapshot(done));
-
-            await Type("jump01", "echo 0 > /proc/sys/net/ipv4/ip_forward");
-            Assert.True(Snapshot(done).Contains("cover"), Why("掩盖没判定通过"));
-
-            // --- 五、隐蔽 ----------------------------------------------------
-            // 让管理员来验收。他查一遍什么都没发现，才算全身而退
+            // --- 四、隐蔽 ----------------------------------------------------
+            // 「把痕迹清掉」不在任务清单里。玩家要是不管它，就由管理员来告诉他后果
             var adminVm = vms[level.Machines.ToList().FindIndex(m => m.Name == level.Admin.Machine)];
             using var tty = new TtySession(adminVm.Admin!);
-            var admin = new AdminAgent(level.Admin, account, tty, seed: 7);
+            // 查的还是关卡里写的那几项，只是把概率提到 1，免得这个测试靠运气
+            var certain = level.Admin with
+            {
+                Routine = [.. level.Admin.Routine.Select(a => a with { Chance = 1 })],
+                Schedule = level.Admin.Schedule with { PauseMin = 0.2, PauseMax = 0.4 },
+            };
+            var admin = new AdminAgent(certain, account, tty, seed: 7);
             admin.PatrolCompleted += run.Observe;
             admin.EnterStage("stealth");
 
-            var report = await admin.PatrolAsync(cts.Token);
-            Assert.False(report.FoundSomething);     // 玩家没在 jump01 上留下东西
-            Assert.Equal(["tunnel", "scan", "fetch", "cover", "stealth"], Snapshot(done));
+            // 玩家把跳板机变成了路由器，走之前没关回去 —— 他看得出来
+            var caught = await admin.PatrolAsync(cts.Token);
+            Assert.True(caught.FoundSomething,
+                        Why($"转发还开着，管理员却什么也没看出来（他查了 {string.Join("、", caught.Did)}）"));
+            Assert.Contains(caught.Findings, f => f.Check == AdminCheck.Forwarding);
+            Assert.False(run.IsComplete);
+
+            // 再查一次也还是不干净：同一处痕迹不重复算怀疑度，但机器并没有变干净
+            var again = await admin.PatrolAsync(cts.Token);
+            Assert.False(again.FoundSomething);      // 没有「新」发现
+            Assert.False(again.Clean);               // 可是东西还在
+            Assert.False(run.IsComplete);
+
+            // 玩家把用过的东西恢复原样
+            await TypeUntil("jump01", "echo 0 > /proc/sys/net/ipv4/ip_forward",
+                            async () => !await Forwarding());
+
+            var clean = await admin.PatrolAsync(cts.Token);
+            Assert.True(clean.Clean, Why("清干净了，管理员却还是看出了东西"));
+            Assert.Equal(["tunnel", "scan", "fetch", "stealth"], Snapshot(done));
             Assert.True(run.IsComplete);
         }
         finally

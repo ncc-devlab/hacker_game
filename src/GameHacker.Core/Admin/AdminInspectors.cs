@@ -38,6 +38,7 @@ public sealed class AdminInspectors(AdminAllow allow, string machine, string adm
         // 和上面同一条命令：服务在不在也是从进程表看出来的，
         // 单独写一套解析只会多一处能出错的地方
         AdminCheck.Services => "ps -o pid,user,tty,args",
+        AdminCheck.Forwarding => "cat /proc/sys/net/ipv4/ip_forward",
         _ => throw new ArgumentOutOfRangeException(nameof(check), check, "没有这项检查"),
     };
 
@@ -48,6 +49,7 @@ public sealed class AdminInspectors(AdminAllow allow, string machine, string adm
         AdminCheck.Sessions => Sessions(output),
         AdminCheck.Log => Log(output),
         AdminCheck.Services => Services(output),
+        AdminCheck.Forwarding => Forwarding(output),
         _ => [],
     };
 
@@ -137,6 +139,25 @@ public sealed class AdminInspectors(AdminAllow allow, string machine, string adm
                 $"进程表里找不到 {service}",
                 $"{machine} 上该一直跑着的 {service} 不见了"))
             .ToList();
+    }
+
+    /// <summary>
+    /// 这台机器在不在替别人转发包。
+    /// </summary>
+    /// <remarks>
+    /// 一台普通的服务器没有理由转发。玩家要穿进内网就得打开它，
+    /// 走的时候不关回去，这位就知道有人拿他的机器当过路由器了。
+    /// </remarks>
+    private List<AdminFinding> Forwarding(string output)
+    {
+        if (allow.Forwarding || output.Trim() != "1") return [];
+        return
+        [
+            new AdminFinding(
+                AdminCheck.Forwarding, "forwarding",
+                "/proc/sys/net/ipv4/ip_forward = 1",
+                $"{machine} 在替别人转发包，可它不是路由器"),
+        ];
     }
 
     private static bool Matches(string command, string pattern) =>
