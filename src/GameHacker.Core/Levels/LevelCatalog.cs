@@ -26,6 +26,12 @@ public sealed class LevelFormatException(IReadOnlyList<string> errors)
 /// </remarks>
 public sealed partial class LevelCatalog
 {
+    /// <summary>
+    /// 关卡文件的解析口径。
+    /// </summary>
+    /// <remarks>公开是为了让别处（比如原语清单里的例子）能按同一口径解析一小段关卡片段。</remarks>
+    public static JsonSerializerOptions JsonOptions => Json;
+
     private static readonly JsonSerializerOptions Json = new()
     {
         PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
@@ -220,11 +226,29 @@ public sealed partial class LevelCatalog
     }
 
     /// <summary>检测原语自己那几个参数。写错了要在加载时就说，别等玩到那一步才发现判定永远不亮。</summary>
+    /// <remarks>组合条件会一层层走下去，嵌套多深都校验得到。</remarks>
     private static void ValidateCheck(LevelStep step, LevelCheck check, LevelDefinition level, Action<string> error)
     {
+        foreach (var child in check.Children) ValidateCheck(step, child, level, error);
+
         string where = $"步骤 {step.Id} 的 check";
         switch (check)
         {
+            case TrafficCheck traffic:
+                if (traffic.IsEmpty)
+                    error($"{where}: traffic 一个条件都没写，那样任何一帧都算数");
+                if (traffic.Times < 1) error($"{where}: times 至少是 1");
+                if (traffic.Port is { } p && p is < 1 or > 65535)
+                    error($"{where}: 端口 {p} 不在 1..65535");
+                if (traffic.Port is not null && traffic.Protocol is null)
+                    error($"{where}: 写了端口就得写 protocol（TCP 还是 UDP）");
+                break;
+            case AllCheck all when all.Checks.Count == 0:
+                error($"{where}: all 里一个条件都没有，这一步会当场完成");
+                break;
+            case AnyCheck any when any.Checks.Count == 0:
+                error($"{where}: any 里一个条件都没有，这一步永远完不成");
+                break;
             case ScanCheck scan:
                 if (scan.Hosts < 2) error($"{where}: 扫描至少要试过 2 台主机才算扫描");
                 if (scan.WithinSeconds < 1) error($"{where}: 扫描的时间窗口要大于 0 秒");
@@ -233,6 +257,11 @@ public sealed partial class LevelCatalog
                                        out var subnet)
                     && scan.Hosts > (1L << (32 - subnet.PrefixLength)) - 2)
                     error($"{where}: 网段 {scan.Network}（{subnet}）里根本没有 {scan.Hosts} 个可用地址");
+                // 要扫到的那台机器得真的在这个网段里，否则这一步怎么扫都过不去
+                if (scan.Finds is not null
+                    && level.Machines.FirstOrDefault(m => m.Name == scan.Finds) is { } target
+                    && target.Nics.All(n => n.Network != scan.Network))
+                    error($"{where}: 要扫到的 {scan.Finds} 根本不在 {scan.Network} 里");
                 break;
             case FileCheck file:
                 if (!ShaPattern().IsMatch(file.Sha256))

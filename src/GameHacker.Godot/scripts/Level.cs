@@ -269,11 +269,17 @@ public partial class Level : Control
                 System.Threading.Volatile.Write(ref _probeAgain, 0);
                 // 等玩家那条命令自己跑完，再看结果
                 await Task.Delay(TimeSpan.FromSeconds(1.5), _adminCts.Token);
-                if (_closing || _run.Wanted is not { } query) continue;
+                if (_closing) continue;
 
-                var session = _sessions.FirstOrDefault(s => s.Spec.Name == query.Machine);
-                if (session is null) continue;
-                _run.Observe(await StateProbe.AskAsync(query, session.Control, _adminCts.Token));
+                // 一步可以拼好几个条件，各自想看的东西可能在不同机器上；
+                // 每问完一样就交上去，说不定这一样就够了
+                foreach (var query in _run.Wanted)
+                {
+                    var session = _sessions.FirstOrDefault(s => s.Spec.Name == query.Machine);
+                    if (session is null) continue;
+                    _run.Observe(await StateProbe.AskAsync(query, session.Control, _adminCts.Token));
+                    if (_closing) break;
+                }
             }
             while (System.Threading.Volatile.Read(ref _probeAgain) == 1 && !_closing);
         }

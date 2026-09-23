@@ -40,7 +40,8 @@ public static class StateProbe
         if (query.FileSha is { } sha)
         {
             string output = await channel.ProbeAsync("file", sha, cancellationToken).ConfigureAwait(false);
-            snapshot = snapshot with { FileFound = output.Trim() == "1" };
+            // 把问的是哪个哈希也带回去：一步里可以同时挂好几份文件
+            snapshot = snapshot with { FileSha = sha, FileFound = output.Trim() == "1" };
         }
 
         return snapshot;

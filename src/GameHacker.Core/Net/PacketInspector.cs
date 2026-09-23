@@ -51,6 +51,34 @@ public static class PacketInspector
         }
     }
 
+    /// <summary>这一帧的 TCP / UDP 端口。不是这两种协议就返回 false。</summary>
+    public static bool TryGetPorts(byte[] frame, out int sourcePort, out int destinationPort)
+    {
+        sourcePort = destinationPort = 0;
+        try
+        {
+            if (Packet.ParsePacket(LinkLayers.Ethernet, frame) is not EthernetPacket { PayloadPacket: IPv4Packet ip })
+                return false;
+            switch (ip.PayloadPacket)
+            {
+                case TcpPacket tcp:
+                    sourcePort = tcp.SourcePort;
+                    destinationPort = tcp.DestinationPort;
+                    return true;
+                case UdpPacket udp:
+                    sourcePort = udp.SourcePort;
+                    destinationPort = udp.DestinationPort;
+                    return true;
+                default:
+                    return false;
+            }
+        }
+        catch (Exception)
+        {
+            return false;
+        }
+    }
+
     /// <summary>这一帧是不是 ICMP echo 应答；是的话给出源、目的地址。</summary>
     public static bool TryGetIcmpEchoReply(byte[] frame, out IPAddress source, out IPAddress destination)
     {

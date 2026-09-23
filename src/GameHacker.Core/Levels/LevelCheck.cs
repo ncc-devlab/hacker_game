@@ -57,11 +57,28 @@ public sealed record StateQuery(string Machine)
     public string? FileSha { get; init; }
 }
 
-/// <summary>客户机答回来的状态。</summary>
+/// <summary>
+/// 客户机答回来的状态。
+/// </summary>
+/// <remarks>
+/// <b>没问到的那几样是 null，不是空。</b> 一份只回答了「有没有那个文件」的快照，
+/// 它的进程表是「没问」而不是「一个进程都没有」—— 不分清楚的话，
+/// 「痕迹清干净了没」会把别人的答复当成「这台机器上什么都没跑」，当场判过。
+/// </remarks>
 public sealed record StateSnapshot(string Machine)
 {
-    public IReadOnlyList<ProcessLine> Processes { get; init; } = [];
-    public bool Forwarding { get; init; }
+    public IReadOnlyList<ProcessLine>? Processes { get; init; }
+    public bool? Forwarding { get; init; }
+
+    /// <summary>
+    /// 这份答复回的是哪个哈希的问题。
+    /// </summary>
+    /// <remarks>
+    /// 要带上它：一步里可以同时挂好几个 <see cref="FileCheck"/>（比如「两份文件都要拿到」），
+    /// 少了这个字段，其中一份的「找到了」会被另一份认领。
+    /// </remarks>
+    public string? FileSha { get; init; }
+
     public bool FileFound { get; init; }
 }
 
@@ -85,6 +102,15 @@ public abstract class CheckTracker
     /// <summary>管理员查完了一次岗。</summary>
     public virtual bool Observe(PatrolReport patrol) => false;
 
+    /// <summary>
+    /// 此刻还想知道的客户机内部状态。不看客户机的原语返回空。
+    /// </summary>
+    /// <remarks>
+    /// 放在 tracker 上而不是 <see cref="LevelCheck"/> 上，是因为它会变：
+    /// 组合条件里已经满足的那几项不必再问，问了也是白跑一趟客户机。
+    /// </remarks>
+    public virtual IReadOnlyList<StateQuery> Wanted => [];
+
     /// <summary>还差什么。给 HUD 用的一句话，null 表示没什么好提示的。</summary>
     public virtual string? Remaining => null;
 }
@@ -94,30 +120,41 @@ public abstract class CheckTracker
 /// （MVP2 文档第三节）。
 /// </summary>
 /// <remarks>
-/// <para>两条通路：网络行为看交换机（<see cref="CheckTracker.Observe(PacketRecord)"/>），
-/// 客户机内部状态经隐藏控制通道问（<see cref="Query"/>），另外还有一条世界之内的：
-/// 让管理员来验收（<see cref="CheckTracker.Observe(PatrolReport)"/>）。</para>
+/// <para><b>它们是零件，不是某一关的逻辑。</b> 每个原语只描述一件与关卡内容无关的事
+/// （「这台机器的包进了那个网段」「有人在挨个试地址」「这台机器上有内容是这个哈希的文件」），
+/// 关卡文件把它们拼起来用。第二关要「探测玩家有没有发过某个包」「有没有扫到目标」
+/// 「有没有把文件拿到手」时，直接挑现成的写进 JSON 即可，不必再写一行 C#。
+/// 现有原语见 <see cref="CheckTypes"/>，那份清单也是文档的来源。</para>
+/// <para>三条通路：网络行为看交换机（<see cref="CheckTracker.Observe(PacketRecord)"/>），
+/// 客户机内部状态经隐藏控制通道问（<see cref="CheckTracker.Wanted"/>），
+/// 还有一条世界之内的：让管理员来验收（<see cref="CheckTracker.Observe(PatrolReport)"/>）。</para>
+/// <para>一步要好几个条件时不必新写原语，用 <see cref="AllCheck"/> / <see cref="AnyCheck"/>
+/// 拼；它们可以任意嵌套。</para>
 /// <para>新原语加一个子类、挂一条 <see cref="JsonDerivedTypeAttribute"/>，
-/// 实现自己的 <see cref="CreateTracker"/> 即可。关卡文件里写错类型名会在加载时报出来。</para>
+/// 实现自己的 <see cref="CreateTracker"/>，再在 <see cref="CheckTypes"/> 里登记一条
+/// （有测试盯着，漏登记会红）。关卡文件里写错类型名会在加载时报出来。</para>
 /// </remarks>
 [JsonPolymorphic(TypeDiscriminatorPropertyName = "type",
                  UnknownDerivedTypeHandling = JsonUnknownDerivedTypeHandling.FailSerialization)]
 [JsonDerivedType(typeof(PingCheck), "ping")]
+[JsonDerivedType(typeof(TrafficCheck), "traffic")]
 [JsonDerivedType(typeof(RouteCheck), "route")]
 [JsonDerivedType(typeof(ScanCheck), "scan")]
 [JsonDerivedType(typeof(FileCheck), "file")]
 [JsonDerivedType(typeof(CleanCheck), "clean")]
 [JsonDerivedType(typeof(PatrolCheck), "patrol")]
+[JsonDerivedType(typeof(AllCheck), "all")]
+[JsonDerivedType(typeof(AnyCheck), "any")]
 public abstract record LevelCheck
 {
     /// <summary>引用到的机器名，加载时校验它们都存在。</summary>
-    public abstract IEnumerable<string> MachineRefs { get; }
+    public virtual IEnumerable<string> MachineRefs => Children.SelectMany(c => c.MachineRefs);
 
     /// <summary>引用到的网段名，加载时校验它们都存在。</summary>
-    public virtual IEnumerable<string> NetworkRefs => [];
+    public virtual IEnumerable<string> NetworkRefs => Children.SelectMany(c => c.NetworkRefs);
 
-    /// <summary>这一步要不要问客户机内部状态；不要就返回 null。</summary>
-    public virtual StateQuery? Query => null;
+    /// <summary>组合条件里套着的那些。校验和引用检查会顺着它往下走。</summary>
+    public virtual IReadOnlyList<LevelCheck> Children => [];
 
     public abstract CheckTracker CreateTracker(LevelWorld world);
 }
@@ -225,7 +262,12 @@ public sealed record ScanCheck : LevelCheck
     /// <summary>这些试探要落在多长的时间窗口里。</summary>
     public int WithinSeconds { get; init; } = 60;
 
-    public override IEnumerable<string> MachineRefs => [];
+    /// <summary>
+    /// 还得真的扫到这台机器：它在窗口里应过答。不写就只要求「扫过」，不要求「扫到」。
+    /// </summary>
+    public string? Finds { get; init; }
+
+    public override IEnumerable<string> MachineRefs => Finds is null ? [] : [Finds];
     public override IEnumerable<string> NetworkRefs => [Network];
 
     public override CheckTracker CreateTracker(LevelWorld world) => new Tracker(this, world);
@@ -234,12 +276,21 @@ public sealed record ScanCheck : LevelCheck
     {
         private readonly int _vlan = world.VlanOf(check.Network);
         private readonly IPNetwork _subnet = world.SubnetOf(check.Network);
+        private readonly IPAddress[] _target = check.Finds is null ? [] : world.IpsOf(check.Finds);
         private readonly Dictionary<IPAddress, TimeSpan> _probed = [];
         private int _peak;
+        private bool _found;
 
         public override bool Observe(PacketRecord packet)
         {
             if (packet.Vlan != _vlan) return false;
+
+            // 目标应了答 = 真的被扫到了。它自己发出来的包不算试探，所以先看这一头
+            if (check.Finds is not null && !_found
+                && (PacketInspector.TryGetIpv4(packet.Bytes, out var replier, out _)
+                    || PacketInspector.TryGetArp(packet.Bytes, out replier, out _))
+                && _target.Contains(replier))
+                _found = true;
 
             IPAddress target;
             if (PacketInspector.TryGetArp(packet.Bytes, out _, out var asked)) target = asked;
@@ -254,11 +305,12 @@ public sealed record ScanCheck : LevelCheck
                 _probed.Remove(stale.Key);
 
             _peak = Math.Max(_peak, _probed.Count);
-            return _probed.Count >= check.Hosts;
+            return _probed.Count >= check.Hosts && (check.Finds is null || _found);
         }
 
         public override string Remaining =>
-            $"{check.WithinSeconds} 秒内试过 {_peak}/{check.Hosts} 台内网主机";
+            $"{check.WithinSeconds} 秒内试过 {_peak}/{check.Hosts} 台内网主机"
+            + (check.Finds is null || _found ? "" : $"，还没扫到 {check.Finds}");
     }
 }
 
@@ -281,13 +333,16 @@ public sealed record FileCheck : LevelCheck
 
     public override IEnumerable<string> MachineRefs => [Machine];
 
-    public override StateQuery Query => new(Machine) { FileSha = Sha256 };
-
     public override CheckTracker CreateTracker(LevelWorld world) => new Tracker(this);
 
     private sealed class Tracker(FileCheck check) : CheckTracker
     {
-        public override bool Observe(StateSnapshot state) => state.Machine == check.Machine && state.FileFound;
+        public override IReadOnlyList<StateQuery> Wanted => [new(check.Machine) { FileSha = check.Sha256 }];
+
+        // 认准回的是自己问的那个哈希：一步里可以同时挂好几份文件
+        public override bool Observe(StateSnapshot state) =>
+            state.Machine == check.Machine && state.FileSha == check.Sha256 && state.FileFound;
+
         public override string Remaining => $"{check.Machine} 上还没有那份文件";
     }
 }
@@ -308,8 +363,6 @@ public sealed record CleanCheck : LevelCheck
 
     public override IEnumerable<string> MachineRefs => [Machine];
 
-    public override StateQuery Query => new(Machine) { Processes = true, Forwarding = true };
-
     public override CheckTracker CreateTracker(LevelWorld world) => new Tracker(this, world);
 
     private sealed class Tracker(CleanCheck check, LevelWorld world) : CheckTracker
@@ -317,12 +370,17 @@ public sealed record CleanCheck : LevelCheck
         private readonly ProcessWhitelist _whitelist = new(world.Allow.Processes);
         private string _remaining = "";
 
+        public override IReadOnlyList<StateQuery> Wanted =>
+            [new(check.Machine) { Processes = true, Forwarding = true }];
+
         public override bool Observe(StateSnapshot state)
         {
-            if (state.Machine != check.Machine) return false;
+            // 这份答复得真的带着我们要的那两样，否则它说明不了任何事
+            if (state.Machine != check.Machine || state.Processes is null || state.Forwarding is null)
+                return false;
 
             var left = state.Processes.Where(p => !_whitelist.Allows(p)).Select(p => p.Command).ToList();
-            if (state.Forwarding) left.Add("转发还开着（/proc/sys/net/ipv4/ip_forward）");
+            if (state.Forwarding is true) left.Add("转发还开着（/proc/sys/net/ipv4/ip_forward）");
 
             _remaining = left.Count == 0 ? "" : "还留着：" + string.Join("、", left);
             return left.Count == 0;
@@ -362,5 +420,157 @@ public sealed record PatrolCheck : LevelCheck
         }
 
         public override string Remaining => $"等管理员查岗，连着 {_clean}/{check.Patrols} 次没发现异常";
+    }
+}
+
+/// <summary>
+/// 交换机上出现过这样的包：<c>Times</c> 次以上。
+/// </summary>
+/// <remarks>
+/// <para>最通用的那个网络原语。上面那些（<see cref="PingCheck"/>、<see cref="RouteCheck"/>）
+/// 说的是「通没通」这类有讲究的事；这一个只管「有没有这样的包飞过」，
+/// 用来表达「玩家有没有连过那个端口」「有没有对着目标发过东西」。</para>
+/// <para>字段都可以不写，不写就是不限。全不写的话任何一帧都算数 —— 加载时会拦下来。</para>
+/// </remarks>
+public sealed record TrafficCheck : LevelCheck
+{
+    /// <summary>源是哪台机器（它的任何一个地址都算）。</summary>
+    public string? From { get; init; }
+
+    /// <summary>目的是哪台机器。</summary>
+    public string? To { get; init; }
+
+    /// <summary>限定在哪个网段里看。</summary>
+    public string? Network { get; init; }
+
+    /// <summary><c>ICMP</c> / <c>TCP</c> / <c>UDP</c> / <c>ARP</c>。</summary>
+    public string? Protocol { get; init; }
+
+    /// <summary>目的端口，TCP / UDP 才有。</summary>
+    public int? Port { get; init; }
+
+    /// <summary>要看到几次。</summary>
+    public int Times { get; init; } = 1;
+
+    public override IEnumerable<string> MachineRefs =>
+        new[] { From, To }.Where(m => m is not null)!;
+
+    public override IEnumerable<string> NetworkRefs => Network is null ? [] : [Network];
+
+    /// <summary>一个条件都没写的话，它会对任何一帧亮 —— 这一定是写关卡的人漏了字段。</summary>
+    public bool IsEmpty => From is null && To is null && Protocol is null && Port is null;
+
+    public override CheckTracker CreateTracker(LevelWorld world) => new Tracker(this, world);
+
+    private sealed class Tracker(TrafficCheck check, LevelWorld world) : CheckTracker
+    {
+        private readonly int _vlan = check.Network is null ? -1 : world.VlanOf(check.Network);
+        private readonly IPAddress[] _from = check.From is null ? [] : world.IpsOf(check.From);
+        private readonly IPAddress[] _to = check.To is null ? [] : world.IpsOf(check.To);
+        private int _seen;
+
+        public override bool Observe(PacketRecord packet)
+        {
+            if (check.Network is not null && packet.Vlan != _vlan) return false;
+            if (check.Protocol is not null
+                && !packet.Protocol.Equals(check.Protocol, StringComparison.OrdinalIgnoreCase)) return false;
+
+            // ARP 的地址在它自己的字段里，不在 IP 头上
+            if (!PacketInspector.TryGetIpv4(packet.Bytes, out var source, out var destination)
+                && !PacketInspector.TryGetArp(packet.Bytes, out source, out destination))
+                return false;
+
+            if (check.From is not null && !_from.Contains(source)) return false;
+            if (check.To is not null && !_to.Contains(destination)) return false;
+            if (check.Port is { } port
+                && (!PacketInspector.TryGetPorts(packet.Bytes, out _, out int actual) || actual != port))
+                return false;
+
+            return ++_seen >= check.Times;
+        }
+
+        public override string Remaining =>
+            check.Times > 1 ? $"这样的包看到了 {_seen}/{check.Times} 个" : "";
+    }
+}
+
+/// <summary>
+/// 里面的条件<b>全部</b>满足。
+/// </summary>
+/// <remarks>
+/// <para>各条件各自记账、互不干扰，而且<b>不要求同时成立</b>：先满足的那条会记着，
+/// 不会因为后来状态变了又掉回去。一步里「既要拿到文件，又要没留下痕迹」就是这个形状。</para>
+/// <para>已经满足的那几条不再往客户机要状态（见 <see cref="CheckTracker.Wanted"/>）。</para>
+/// </remarks>
+public sealed record AllCheck : LevelCheck
+{
+    public required IReadOnlyList<LevelCheck> Checks { get; init; }
+
+    public override IReadOnlyList<LevelCheck> Children => Checks;
+
+    public override CheckTracker CreateTracker(LevelWorld world) =>
+        new Tracker([.. Checks.Select(c => c.CreateTracker(world))]);
+
+    private sealed class Tracker(IReadOnlyList<CheckTracker> parts) : CheckTracker
+    {
+        private readonly bool[] _done = new bool[parts.Count];
+
+        private bool Feed(Func<CheckTracker, bool> observe)
+        {
+            for (int i = 0; i < parts.Count; i++)
+                if (!_done[i] && observe(parts[i]))
+                    _done[i] = true;
+            return _done.All(d => d);
+        }
+
+        public override bool Observe(PacketRecord packet) => Feed(t => t.Observe(packet));
+        public override bool Observe(StateSnapshot state) => Feed(t => t.Observe(state));
+        public override bool Observe(PatrolReport patrol) => Feed(t => t.Observe(patrol));
+
+        public override IReadOnlyList<StateQuery> Wanted =>
+            [.. parts.Where((_, i) => !_done[i]).SelectMany(t => t.Wanted).Distinct()];
+
+        public override string Remaining => string.Join("；",
+            parts.Where((_, i) => !_done[i])
+                 .Select(t => t.Remaining)
+                 .Where(r => !string.IsNullOrEmpty(r)));
+    }
+}
+
+/// <summary>
+/// 里面的条件满足<b>任意一条</b>即可。
+/// </summary>
+/// <remarks>
+/// 一件事有好几种正当做法时用它 —— 比如「文件拿到自己机器上，或者拿到跳板机上也行」。
+/// 这比把判定放宽到「随便什么都算」要好：每条路都是明写出来的。
+/// </remarks>
+public sealed record AnyCheck : LevelCheck
+{
+    public required IReadOnlyList<LevelCheck> Checks { get; init; }
+
+    public override IReadOnlyList<LevelCheck> Children => Checks;
+
+    public override CheckTracker CreateTracker(LevelWorld world) =>
+        new Tracker([.. Checks.Select(c => c.CreateTracker(world))]);
+
+    private sealed class Tracker(IReadOnlyList<CheckTracker> parts) : CheckTracker
+    {
+        // 每条都要喂到：它们各自攒着自己的账（比如扫描的时间窗口），
+        // 短路求值会让没被喂的那条永远停在半路
+        private bool Feed(Func<CheckTracker, bool> observe)
+        {
+            bool hit = false;
+            foreach (var part in parts) hit |= observe(part);
+            return hit;
+        }
+
+        public override bool Observe(PacketRecord packet) => Feed(t => t.Observe(packet));
+        public override bool Observe(StateSnapshot state) => Feed(t => t.Observe(state));
+        public override bool Observe(PatrolReport patrol) => Feed(t => t.Observe(patrol));
+
+        public override IReadOnlyList<StateQuery> Wanted => [.. parts.SelectMany(t => t.Wanted).Distinct()];
+
+        public override string Remaining => string.Join(" 或 ",
+            parts.Select(t => t.Remaining).Where(r => !string.IsNullOrEmpty(r)));
     }
 }

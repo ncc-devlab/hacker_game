@@ -88,9 +88,9 @@ public class StateProbeIntegrationTests
         var query = new StateQuery("jump01") { Processes = true, Forwarding = true };
 
         var before = await StateProbe.AskAsync(query, control, cts.Token);
-        Assert.NotEmpty(before.Processes);
-        Assert.Contains(before.Processes, p => p.Command.Contains("syslogd"));
-        Assert.False(before.Forwarding);                       // 一台普通机器不转发
+        Assert.NotEmpty(before.Processes!);
+        Assert.Contains(before.Processes!, p => p.Command.Contains("syslogd"));
+        Assert.Equal(false, before.Forwarding);                       // 一台普通机器不转发
 
         // 玩家把跳板机变成路由器，还留了个中继进程
         await vm.Console!.SendAsync(
@@ -98,8 +98,8 @@ public class StateProbeIntegrationTests
         await Task.Delay(1500, cts.Token);
 
         var after = await StateProbe.AskAsync(query, control, cts.Token);
-        Assert.True(after.Forwarding);
-        Assert.Contains(after.Processes, p => p.Command.Contains("sleep 600"));
+        Assert.Equal(true, after.Forwarding);
+        Assert.Contains(after.Processes!, p => p.Command.Contains("sleep 600"));
 
         // 「掩盖」这一步看的就是这两样
         var clean = new CleanCheck { Machine = "jump01" }.CreateTracker(

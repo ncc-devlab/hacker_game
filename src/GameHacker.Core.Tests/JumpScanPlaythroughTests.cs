@@ -105,8 +105,8 @@ public class JumpScanPlaythroughTests
             // 游戏里 Level.NudgeProbe 做的是同一件事
             async Task Probe()
             {
-                if (run.Wanted is not { } query) return;
-                run.Observe(await StateProbe.AskAsync(query, controls[query.Machine], cts.Token));
+                foreach (var query in run.Wanted)
+                    run.Observe(await StateProbe.AskAsync(query, controls[query.Machine], cts.Token));
             }
 
             // 客户机的 getty 要在就绪信标之后一瞬间才把 shell 接到 tty 上，
@@ -124,7 +124,7 @@ public class JumpScanPlaythroughTests
 
             async Task<bool> Forwarding() =>
                 (await StateProbe.AskAsync(new StateQuery("jump01") { Forwarding = true },
-                                           controls["jump01"], cts.Token)).Forwarding;
+                                           controls["jump01"], cts.Token)).Forwarding is true;
 
             // --- 一、建隧道 --------------------------------------------------
             // 玩家把跳板机变成路由器，再让自己的机器知道内网要走它

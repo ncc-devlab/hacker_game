@@ -46,10 +46,11 @@ public sealed class LevelRun
     /// 当前这一步要看客户机里的什么；不看就是 null。
     /// </summary>
     /// <remarks>
-    /// 宿主拿到它之后，只在<b>可能改变这些状态的事情发生之后</b>问一次
-    /// （玩家敲了一行命令、交换机上过了包、管理员查完岗），不要拿它当轮询的凭据。
+    /// <para>宿主拿到它之后，只在<b>可能改变这些状态的事情发生之后</b>问一次
+    /// （玩家敲了一行命令、交换机上过了包、管理员查完岗），不要拿它当轮询的凭据。</para>
+    /// <para>是个列表：一步可以拼好几个条件，组合条件里已经满足的那些不会再出现在这里。</para>
     /// </remarks>
-    public StateQuery? Wanted { get { lock (_gate) return CurrentStep?.Check?.Query; } }
+    public IReadOnlyList<StateQuery> Wanted { get { lock (_gate) return _tracker?.Wanted ?? []; } }
 
     /// <summary>某一步完成了。参数是刚完成的那一步。</summary>
     public event Action<LevelStep>? StepCompleted;

@@ -19,6 +19,9 @@ public class LevelCheckTests
 {
     private const int Outside = 10, Inside = 20;
 
+    /// <summary>目标文件内容的哈希，随便编的。</summary>
+    private const string Loot = "b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0";
+
     private static readonly LevelDefinition Jump = new()
     {
         Id = "jump", Title = "jump", Track = LevelTrack.Mission,
@@ -161,16 +164,16 @@ public class LevelCheckTests
         string sha = new('a', 64);
         var run = RunWith(new FileCheck { Machine = "ws", Sha256 = sha });
 
-        Assert.Equal(new StateQuery("ws") { FileSha = sha }, run.Wanted);
+        Assert.Equal([new StateQuery("ws") { FileSha = sha }], run.Wanted);
 
-        run.Observe(new StateSnapshot("ws") { FileFound = false });
+        run.Observe(new StateSnapshot("ws") { FileSha = sha, FileFound = false });
         Assert.Equal(0, run.CurrentIndex);
 
         // 别的机器上有那份文件不算 —— 目标是「复制回你的机器」
-        run.Observe(new StateSnapshot("jump01") { FileFound = true });
+        run.Observe(new StateSnapshot("jump01") { FileSha = sha, FileFound = true });
         Assert.Equal(0, run.CurrentIndex);
 
-        run.Observe(new StateSnapshot("ws") { FileFound = true });
+        run.Observe(new StateSnapshot("ws") { FileSha = sha, FileFound = true });
         Assert.True(run.IsComplete);
     }
 
@@ -183,11 +186,12 @@ public class LevelCheckTests
     public void 掩盖_白名单外的进程还在就不算清干净()
     {
         var run = RunWith(new CleanCheck { Machine = "jump01" });
-        Assert.Equal(new StateQuery("jump01") { Processes = true, Forwarding = true }, run.Wanted);
+        Assert.Equal([new StateQuery("jump01") { Processes = true, Forwarding = true }], run.Wanted);
 
         run.Observe(new StateSnapshot("jump01")
         {
             Processes = [Process("{init} /bin/sh /init"), Process("syslogd -n"), Process("nc -lk -p 8000 -e nc 172.16.5.20 9000")],
+            Forwarding = false,
         });
         Assert.Equal(0, run.CurrentIndex);
         Assert.Contains("nc -lk", run.Remaining);
@@ -195,6 +199,7 @@ public class LevelCheckTests
         run.Observe(new StateSnapshot("jump01")
         {
             Processes = [Process("{init} /bin/sh /init"), Process("syslogd -n")],
+            Forwarding = false,
         });
         Assert.True(run.IsComplete);
     }
@@ -214,7 +219,7 @@ public class LevelCheckTests
         // 关卡放行 syslogd，管理员也就不会报它；两边必须是同一份，
         // 否则会出现「系统说你清干净了，管理员却还是把你抓了」
         var run = RunWith(new CleanCheck { Machine = "jump01" });
-        run.Observe(new StateSnapshot("jump01") { Processes = [Process("syslogd -n")] });
+        run.Observe(new StateSnapshot("jump01") { Processes = [Process("syslogd -n")], Forwarding = false });
         Assert.True(run.IsComplete);
     }
 
@@ -260,7 +265,7 @@ public class LevelCheckTests
             [
                 new LevelStep { Id = "tunnel", Title = "建隧道", Check = new RouteCheck { From = "ws", Network = "inside" } },
                 new LevelStep { Id = "scan", Title = "扫描", Check = new ScanCheck { Network = "inside", Hosts = 4, WithinSeconds = 60 } },
-                new LevelStep { Id = "fetch", Title = "拿取", Check = new FileCheck { Machine = "ws", Sha256 = new string('b', 64) } },
+                new LevelStep { Id = "fetch", Title = "拿取", Check = new FileCheck { Machine = "ws", Sha256 = Loot } },
                 new LevelStep { Id = "cover", Title = "掩盖", Check = new CleanCheck { Machine = "jump01" } },
                 new LevelStep { Id = "stealth", Title = "隐蔽", Check = new PatrolCheck { Patrols = 1 } },
             ],
@@ -270,9 +275,9 @@ public class LevelCheckTests
         run.StepCompleted += s => done.Add(s.Id);
 
         // 第一步要的是包，喂状态和查岗结论都不该推进
-        run.Observe(new StateSnapshot("ws") { FileFound = true });
+        run.Observe(new StateSnapshot("ws") { FileSha = Loot, FileFound = true });
         run.Observe(Patrol());
-        Assert.Null(run.Wanted);
+        Assert.Empty(run.Wanted);
 
         run.Observe(Ip("10.0.0.1", "172.16.5.20", Inside));
         run.Observe(Ip("172.16.5.20", "10.0.0.1", Inside));
@@ -280,14 +285,14 @@ public class LevelCheckTests
         Assert.Equal(["tunnel", "scan"], done);
 
         // 到了拿取这步才开始想看客户机内部
-        Assert.Equal("ws", run.Wanted?.Machine);
-        run.Observe(new StateSnapshot("ws") { FileFound = true });
+        Assert.Equal("ws", run.Wanted.Single().Machine);
+        run.Observe(new StateSnapshot("ws") { FileSha = Loot, FileFound = true });
 
-        Assert.Equal("jump01", run.Wanted?.Machine);
-        run.Observe(new StateSnapshot("jump01") { Processes = [Process("syslogd -n")] });
+        Assert.Equal("jump01", run.Wanted.Single().Machine);
+        run.Observe(new StateSnapshot("jump01") { Processes = [Process("syslogd -n")], Forwarding = false });
 
         // 最后一步不问客户机：听管理员的
-        Assert.Null(run.Wanted);
+        Assert.Empty(run.Wanted);
         run.Observe(Patrol());
 
         Assert.Equal(["tunnel", "scan", "fetch", "cover", "stealth"], done);

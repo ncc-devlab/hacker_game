@@ -109,7 +109,8 @@
       "id": "scan",
       "title": "扫描",
       "hint": "内网段是 172.16.5.0/24。挨个地址试过去，看哪台机器在。\n没人应答的地址也要试 —— 试出来的空白同样是情报。",
-      "check": { "type": "scan", "network": "inside", "hosts": 12, "withinSeconds": 60 }
+      // 扫过还不够，还得真的扫到目标：finds 要求 files01 在窗口里应过答
+      "check": { "type": "scan", "network": "inside", "hosts": 12, "withinSeconds": 60, "finds": "files01" }
     },
     {
       "id": "fetch",
