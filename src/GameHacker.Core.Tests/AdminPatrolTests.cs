@@ -1,16 +1,15 @@
 using GameHacker.Core.Admin;
-using GameHacker.Core.Channels;
 using GameHacker.Core.Qemu;
 
 namespace GameHacker.Core.Tests;
 
 /// <summary>
-/// 管理员的判定逻辑：什么算可疑、扣多少分、玩家看不看得懂。
+/// 管理员的判定与节奏：什么算可疑、疑心怎么涨怎么消、什么时候翻脸。
 /// </summary>
 /// <remarks>
-/// 这里的 <c>ps</c> 样本是从真客户机上抄回来的原样输出（见
-/// <see cref="AdminTtyIntegrationTests"/> 走的那条路），不是手编的 —— 列宽、
-/// busybox 的 <c>4,64</c> 式终端号、内核线程的方括号，都得照着真的来。
+/// 这里的 <c>ps</c> 与日志样本都是从真客户机上抄回来的原样输出 —— busybox 的
+/// <c>4,64</c> 式终端号、内核线程的方括号、syslog 的行格式，都得照着真的来。
+/// 真机上的那条路见 <see cref="AdminTtyIntegrationTests"/>。
 /// </remarks>
 public class AdminPatrolTests
 {
@@ -18,106 +17,237 @@ public class AdminPatrolTests
         PID   USER     TT     COMMAND
             1 root     ?      {init} /bin/sh /init
             2 root     ?      [kthreadd]
-           11 root     ?      [kworker/0:1]
           527 root     ?      {init} /bin/sh /init
+          601 root     ?      syslogd -n
           537 root     4,66   /bin/login -- opsadm
-          548 root     4,64   /bin/sh --
           549 opsadm   4,66   -sh
           550 opsadm   4,66   ps -o pid,user,tty,args
         """;
+
+    private const string CleanLog = """
+        3
+        Sep 23 08:34:41 jump01 syslog.info syslogd started: BusyBox v1.37.0
+        Sep 23 08:34:41 jump01 user.notice init: system boot: jump01
+        Sep 23 08:35:02 jump01 user.info dropbear: connection from 10.0.0.9
+        """;
+
+    private static readonly AdminAllow Allow = new()
+    {
+        Processes = ["syslogd*"],
+        Sessions = ["ttyS2"],
+        Services = ["syslogd"],
+        LogRedFlags = ["nc ", "/tmp/"],
+    };
 
     private static readonly AdminDefinition Definition = new()
     {
         Machine = "jump01",
         User = "opsadm",
-        Threshold = 60,
-        ProcessWeight = 25,
+        Allow = Allow,
+        Suspicion = new SuspicionRules { SweepAt = 40, ExposedAt = 100, CalmPerPatrol = 5, SweepMultiplier = 2 },
+        Routine =
+        [
+            new AdminAction { Id = "sessions", Check = AdminCheck.Sessions, Chance = 0.6, Weight = 20 },
+            new AdminAction { Id = "processes", Check = AdminCheck.Processes, Chance = 0.5, Weight = 20 },
+            new AdminAction { Id = "log", Check = AdminCheck.Log, Chance = 0.5, Weight = 25 },
+            new AdminAction { Id = "services", Check = AdminCheck.Services, Chance = 0.3, Weight = 30 },
+        ],
     };
 
-    private static AdminAgent NewAgent(AdminDefinition? definition = null) =>
-        new(definition ?? Definition, new AdminAccount("opsadm", "pw"), null!, seed: 1);
+    private static AdminAgent NewAgent(AdminDefinition? definition = null, int seed = 1) =>
+        new(definition ?? Definition, new AdminAccount("opsadm", "pw"), null!, seed);
+
+    private static AdminInspectors NewInspectors() => new(Allow, "jump01", "opsadm");
+
+    /// <summary>玩家把碍事的 syslogd 杀了之后的进程表。</summary>
+    private static string NoSyslogd =>
+        string.Join('\n', CleanPs.Split('\n').Where(l => !l.Contains("syslogd")));
+
+    /// <summary>照着一次查岗的样子结账：看了哪几样、各自看到什么。</summary>
+    private static PatrolReport Patrol(AdminAgent agent, AdminInspectors inspectors,
+                                       bool sweep, params (AdminCheck Check, string Output)[] looked)
+    {
+        var weights = Definition.Routine.ToDictionary(a => a.Check, a => a.Weight);
+        var seen = looked
+            .SelectMany(l => inspectors.Inspect(l.Check, l.Output).Select(f => (f, weights[l.Check])))
+            .ToList();
+        return agent.Settle(sweep, looked.Select(l => l.Check).ToList(), seen);
+    }
+
+    // --- 看出什么 -----------------------------------------------------------
 
     [Fact]
-    public void 干净的机器上什么也发现不了()
+    public void 干净的机器上什么也看不出来()
     {
-        var report = NewAgent().Evaluate(CleanPs);
+        var inspectors = NewInspectors();
+        var report = Patrol(NewAgent(), inspectors, false,
+            (AdminCheck.Processes, CleanPs), (AdminCheck.Sessions, CleanPs),
+            (AdminCheck.Services, CleanPs), (AdminCheck.Log, CleanLog));
+
         Assert.False(report.FoundSomething);
-        Assert.Equal(0, report.Score);
-        Assert.False(report.Exposed);
+        Assert.Equal(0, report.Suspicion);
     }
 
     [Fact]
-    public void 白名单外的进程被发现_并说得出是哪一条()
+    public void 别人登录着会被看出来_管理员自己的终端不算()
     {
-        var agent = NewAgent();
-        var report = agent.Evaluate(CleanPs + "\n  612 root     4,64   nc -l -p 4444");
+        // 玩家的会话在 ttyS0（设备号 4,64），管理员自己在 ttyS2（4,66）
+        string output = CleanPs + "\n  700 root     4,64   -sh";
+        var findings = NewInspectors().Inspect(AdminCheck.Sessions, output);
 
-        var finding = Assert.Single(report.Findings);
-        Assert.Equal("nc -l -p 4444", finding.Subject);
-        Assert.Equal(25, report.Score);
-        // 护栏：玩家要能看懂为什么被扣分 —— 说法里得有机器、进程和它的样子
-        Assert.Contains("jump01", finding.Explanation);
+        var finding = Assert.Single(findings);
+        Assert.Equal("tty:ttyS0", finding.Subject);
+        Assert.Contains("还有别人登录着", finding.Explanation);
+    }
+
+    [Fact]
+    public void 该跑的服务被杀掉会被看出来()
+    {
+        var finding = Assert.Single(NewInspectors().Inspect(AdminCheck.Services, NoSyslogd));
+        Assert.Equal("service:syslogd", finding.Subject);
+        Assert.Contains("不见了", finding.Explanation);
+    }
+
+    [Fact]
+    public void 日志里刺眼的记录会被看出来()
+    {
+        string log = CleanLog + "\nSep 23 08:40:11 jump01 user.info root: nc -l -p 4444";
+        var finding = Assert.Single(NewInspectors().Inspect(AdminCheck.Log, log));
         Assert.Contains("nc -l -p 4444", finding.Explanation);
-        Assert.Contains("612", finding.Evidence);
     }
 
     [Fact]
-    public void 同一个进程不会被反复扣分()
+    public void 把日志删短了会被看出来()
     {
-        // 管理员每次来都看得见那个还在跑的进程。按次累加的话，
-        // 玩家做什么都来不及，分数只取决于他动作多慢
+        // 「删除」和「掩盖」的区别就在这里：日志凭空短了一截，本身就是痕迹
+        var inspectors = NewInspectors();
+        Assert.Empty(inspectors.Inspect(AdminCheck.Log, CleanLog));        // 第一次，记住有多长
+
+        string truncated = "1\nSep 23 08:34:41 jump01 syslog.info syslogd started: BusyBox v1.37.0";
+        var finding = Assert.Single(inspectors.Inspect(AdminCheck.Log, truncated));
+        Assert.Equal("log:truncated", finding.Subject);
+        Assert.Contains("短了一截", finding.Explanation);
+
+        // 之后维持这个长度就不再重复报 —— 他只会对「又变短了」起疑
+        Assert.Empty(inspectors.Inspect(AdminCheck.Log, truncated));
+    }
+
+    // --- 疑心怎么走 ---------------------------------------------------------
+
+    [Fact]
+    public void 小事只是起疑_攒够了才彻底查()
+    {
         var agent = NewAgent();
-        string dirty = CleanPs + "\n  612 root     4,64   nc -l -p 4444";
+        var inspectors = NewInspectors();
+        string dirty = CleanPs + "\n  700 root     4,64   -sh";
 
-        Assert.Equal(25, agent.Evaluate(dirty).Score);
-        var second = agent.Evaluate(dirty);
-        Assert.False(second.FoundSomething);
-        Assert.Equal(25, second.Score);
+        // 看到一个陌生会话：起疑，还不至于翻脸
+        var first = Patrol(agent, inspectors, false, (AdminCheck.Sessions, dirty));
+        Assert.Equal(20, first.Suspicion);
+        Assert.False(first.Exposed);
+
+        // 又看到一个不该在的进程：疑心到 40，够他认真查一遍了
+        var second = Patrol(agent, inspectors, false,
+            (AdminCheck.Processes, dirty + "\n  701 root     ?      tcpdump -i eth0"));
+        Assert.Equal(40, second.Suspicion);
+        Assert.False(second.Exposed);
+
+        // 彻底检查：全看一遍，而且每处都加倍算
+        var sweep = Patrol(agent, inspectors, true,
+            (AdminCheck.Sessions, dirty), (AdminCheck.Processes, dirty + "\n  701 root     ?      tcpdump -i eth0"),
+            (AdminCheck.Services, NoSyslogd),
+            (AdminCheck.Log, CleanLog + "\nSep 23 08:40:11 jump01 user.info root: nc -l -p 4444"));
+        Assert.True(sweep.Sweep);
+        Assert.True(sweep.Exposed);           // 40 + (30+25)*2 = 150 -> 封顶 100
+        Assert.Equal(100, sweep.Suspicion);
     }
 
     [Fact]
-    public void 攒够阈值就是暴露()
+    public void 什么都没查出来的时候疑心会消退()
     {
-        // 阈值 50 = 两条发现（每条 25）
-        var agent = NewAgent(Definition with { Threshold = 50 });
-        Assert.False(agent.Evaluate(CleanPs + "\n  612 root     4,64   nc -l -p 4444").Exposed);
-
-        var report = agent.Evaluate(CleanPs + "\n  700 root     ?      tcpdump -i eth0 -w /tmp/x.pcap");
-        Assert.True(report.Exposed);
-        Assert.Equal(50, report.Score);
-        Assert.Equal(2, agent.Findings.Count);   // 两条都留着，玩家能回看自己栽在哪
-    }
-
-    [Fact]
-    public void 关卡可以把本机该有的进程加进白名单()
-    {
-        var agent = NewAgent(Definition with { AllowProcesses = ["syslogd*", "dropbear*"] });
-        var report = agent.Evaluate(CleanPs + """
-
-              601 root     ?      syslogd -n
-              602 root     ?      dropbear -R -p 22
-              612 root     4,64   nc -l -p 4444
-            """);
-
-        Assert.Equal("nc -l -p 4444", Assert.Single(report.Findings).Subject);
-    }
-
-    [Fact]
-    public void 内核线程一律放过()
-    {
-        // 玩家伪造不了内核线程；把它们算进来的话，换个内核版本白名单就要重写
+        // 没有这一条的话怀疑度只增不减，玩家迟早必然暴露，隐蔽就不是手艺只是拖时间
         var agent = NewAgent();
-        Assert.False(agent.Evaluate(CleanPs + "\n  999 root     ?      [kworker/u4:99-events]").FoundSomething);
+        var inspectors = NewInspectors();
+        Patrol(agent, inspectors, false, (AdminCheck.Sessions, CleanPs + "\n  700 root     4,64   -sh"));
+        Assert.Equal(20, agent.Suspicion);
+
+        Patrol(agent, inspectors, false, (AdminCheck.Processes, CleanPs));
+        Assert.Equal(15, agent.Suspicion);
+        Patrol(agent, inspectors, false, (AdminCheck.Processes, CleanPs));
+        Assert.Equal(10, agent.Suspicion);
     }
 
     [Fact]
-    public void 解析_ps_输出_命令里的空格不会把列切错()
+    public void 同一处痕迹不会被反复算()
     {
-        var rows = ProcessTable.Parse(CleanPs);
-        Assert.Equal(8, rows.Count);
-        var login = rows.Single(r => r.Pid == 537);
-        Assert.Equal(("root", "4,66", "/bin/login -- opsadm"), (login.User, login.Tty, login.Command));
-        Assert.Equal("/bin/login", login.Executable);
-        Assert.True(rows.Single(r => r.Pid == 2).IsKernelThread);
+        var agent = NewAgent();
+        var inspectors = NewInspectors();
+        string dirty = CleanPs + "\n  700 root     4,64   -sh";
+
+        Assert.Equal(20, Patrol(agent, inspectors, false, (AdminCheck.Sessions, dirty)).Suspicion);
+        var again = Patrol(agent, inspectors, false, (AdminCheck.Sessions, dirty));
+        Assert.False(again.FoundSomething);
+        Assert.Equal(20, again.Suspicion);    // 没涨，但也没消：他确实又看见了
+    }
+
+    // --- 节奏与编排 ---------------------------------------------------------
+
+    [Fact]
+    public void 每次只随手看几样_而且次次不同()
+    {
+        var agent = NewAgent();
+        var rounds = Enumerable.Range(0, 12)
+            .Select(_ => agent.PickActions().Select(a => a.Id).ToList())
+            .ToList();
+
+        Assert.All(rounds, r => Assert.InRange(r.Count, 1, Definition.Schedule.MaxActions));
+        // 他是人不是巡检脚本：抽到的组合和顺序都该变
+        Assert.True(rounds.Select(r => string.Join(",", r)).Distinct().Count() > 1,
+                    "每次查岗做的事都一样，玩家数着次数就能算出来");
+    }
+
+    [Fact]
+    public void 彻底检查做全套()
+    {
+        var agent = NewAgent(Definition with { Sweep = ["sessions", "log"] });
+        Assert.Equal(["sessions", "log"], agent.SweepActions().Select(a => a.Id));
+        // 没指定就是全做一遍
+        Assert.Equal(4, NewAgent().SweepActions().Count);
+    }
+
+    [Fact]
+    public void 进入某个阶段之后换一套脾气()
+    {
+        var agent = NewAgent(Definition with
+        {
+            Stages = new Dictionary<string, AdminStage>
+            {
+                ["cover"] = new()
+                {
+                    Suspicion = new SuspicionRules { SweepAt = 10, ExposedAt = 60, CalmPerPatrol = 0, SweepMultiplier = 3 },
+                    Routine = [new AdminAction { Id = "log", Check = AdminCheck.Log, Chance = 1, Weight = 25 }],
+                    Visibility = AdminVisibility.Hidden,
+                },
+            },
+        });
+        var inspectors = NewInspectors();
+
+        agent.EnterStage("cover");
+        Assert.Equal(AdminVisibility.Hidden, agent.Visibility);
+        Assert.Equal(["log"], agent.PickActions().Select(a => a.Id));
+        Assert.Equal(60, agent.ExposedAt);
+
+        // 怀疑度不会因为换阶段就清零 —— 他不会忘掉之前看见的事
+        Patrol(agent, inspectors, false, (AdminCheck.Sessions, CleanPs + "\n  700 root     4,64   -sh"));
+        Assert.Equal(20, agent.Suspicion);
+    }
+
+    [Fact]
+    public void 认不得的阶段名不会把他弄坏()
+    {
+        var agent = NewAgent();
+        agent.EnterStage("没有这一步");
+        Assert.Equal(4, agent.SweepActions().Count);      // 还是原来那套
+        Assert.Equal(AdminVisibility.Shown, agent.Visibility);
     }
 }

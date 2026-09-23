@@ -20,17 +20,58 @@
                                    { "network": "inside",  "ip": "172.16.5.1" } ], "persona": "legacy-server" },
     { "name": "files01", "nics": [ { "network": "inside",  "ip": "172.16.5.20" } ], "persona": "legacy-server" }
   ],
-  // 管理员：不定期登录跳板机，看有没有不该在的进程。
-  // 这几个数就是难度旋钮，现在给的是「够紧张但来得及收拾」的一档。
+  // 管理员：一个会查岗的人，不是巡检脚本。
+  // 每次登录只随手看几样（按各自的概率抽），看到小事只是起疑；
+  // 疑心攒到 sweepAt 就把机器从头翻一遍，那一遍基本什么都藏不住。
+  // 所以玩家要管理的不是「这次别被看到」，而是「别让他起疑心」。
   "admin": {
     "machine": "jump01",
     "user": "opsadm",
-    "firstPatrolSeconds": 90,
-    "intervalSeconds": 120,
-    "jitterSeconds": 25,
-    "threshold": 75,
-    "processWeight": 25,
-    "allowProcesses": []
+    "visibility": "shown",          // 高手模式改成 hidden：界面上不再显示他的动向
+    "schedule": {
+      "firstPatrolSeconds": 90,
+      "intervalSeconds": 120,
+      "jitterSeconds": 25,
+      "minActions": 1,
+      "maxActions": 3,
+      "pauseMin": 1.5,
+      "pauseMax": 5
+    },
+    "suspicion": {
+      "sweepAt": 40,
+      "exposedAt": 100,
+      "calmPerPatrol": 5,           // 一次什么都没查出来，疑心退一点：人会放松
+      "sweepMultiplier": 2
+    },
+    "allow": {
+      "processes": ["syslogd*"],
+      // ttyS2 是他自己的终端；ttyS0 是这台机器的物理控制台，上面一直有个 shell，
+      // 属于常态。真正该让他起疑的是「除此之外还有人在」
+      "sessions": ["ttyS2", "ttyS0"],
+      "services": ["syslogd"],      // 玩家嫌它碍事把它杀了，同样可疑
+      "logRedFlags": ["nc ", "tcpdump", "scp ", "/tmp/"]
+    },
+    "routine": [
+      { "id": "sessions", "check": "sessions", "chance": 0.6, "weight": 20 },
+      { "id": "processes", "check": "processes", "chance": 0.5, "weight": 20 },
+      { "id": "log", "check": "log", "chance": 0.5, "weight": 25 },
+      { "id": "services", "check": "services", "chance": 0.3, "weight": 30 }
+    ],
+    "sweep": ["sessions", "processes", "log", "services"],
+    "stages": {
+      // 玩家一开始扫内网，机房那边就会有动静，他来得更勤、更容易起疑
+      "scan": {
+        "schedule": { "firstPatrolSeconds": 45, "intervalSeconds": 75, "jitterSeconds": 20,
+                      "minActions": 2, "maxActions": 4, "pauseMin": 1.5, "pauseMax": 4 },
+        "suspicion": { "sweepAt": 30, "exposedAt": 100, "calmPerPatrol": 3, "sweepMultiplier": 2 }
+      },
+      // 到了掩盖这一步，他已经在留意这台机器了：来得最勤，一点小事就翻
+      "cover": {
+        "schedule": { "firstPatrolSeconds": 40, "intervalSeconds": 60, "jitterSeconds": 15,
+                      "minActions": 2, "maxActions": 4, "pauseMin": 1, "pauseMax": 3 },
+        "suspicion": { "sweepAt": 25, "exposedAt": 100, "calmPerPatrol": 2, "sweepMultiplier": 3 }
+      }
+    }
   },
   "steps": [
     { "id": "tunnel",  "title": "建隧道", "hint": "连上跳板机，建立通往内网的隧道。" },

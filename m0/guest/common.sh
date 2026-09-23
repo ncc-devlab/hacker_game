@@ -51,6 +51,23 @@ m0_start_agent() {
     ) &
 }
 
+# 一台真实的机器上总有些东西在跑、在记。
+#
+# 管理员查岗查的就是这些：日志里有没有奇怪的记录、该在的服务还在不在、
+# 谁登录过。所以这些东西必须是<b>真的</b> —— 玩家能看、能改、能删，
+# 也正因为能改，才有「掩盖痕迹」这一步可玩。
+m0_start_services() {
+    # 注意调用顺序：这一步要在建管理员账号<b>之后</b>。反过来的话，
+    # chpasswd 会往 syslog 写一句「口令已修改」，等于告诉玩家这机器上有个什么账号
+    mkdir -p /var/log /var/run /var/empty
+    # 登录记录要有这个文件才会被写：login 只往已经存在的 wtmp 里追加
+    [ -f /var/log/wtmp ] || : > /var/log/wtmp
+    # 系统日志。-n 前台跑，交给我们自己放后台，免得它 fork 之后 pid 不受控
+    syslogd -n >/dev/null 2>&1 &
+    sleep 0.2
+    logger -t init "system boot: $M0_HOST"
+}
+
 # 管理员专用 tty（ttyS2）。
 #
 # 游戏侧的「管理员」是个假人，但他登录这台机器的方式是真的：真的 getty、
@@ -240,6 +257,10 @@ m0_banner() {
 # 这是 tmux/vim 正常工作的前提。外层 while 循环 respawn ——
 # 玩家在游戏里敲 exit 不能让整台虚拟机 panic。
 m0_console_loop() {
+    # 告诉宿主：玩家终端这边的 shell 起来了，现在敲进来的字才有人读。
+    # ready 信标只说明 ttyS1 的代理起来了，那比这里早好几秒 —— 自检和截图
+    # 在这中间敲命令的话，字会送进一个还没人读的串口，直接丢掉。
+    [ -c /dev/ttyS1 ] && echo "{\"ev\":\"console\"}" > /dev/ttyS1
     while true; do
         getty -n -l /bin/sh 115200 ttyS0 xterm-256color
         sleep 1

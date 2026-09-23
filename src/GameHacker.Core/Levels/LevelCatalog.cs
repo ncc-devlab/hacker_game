@@ -156,14 +156,30 @@ public sealed partial class LevelCatalog
         {
             if (!names.Contains(admin.Machine))
                 Error($"管理员要查的机器 \"{admin.Machine}\" 不存在");
-            if (admin.IntervalSeconds < 5 || admin.FirstPatrolSeconds < 0)
-                Error("管理员的查岗间隔太短");
-            if (admin.JitterSeconds < 0 || admin.JitterSeconds >= admin.IntervalSeconds)
-                Error($"查岗浮动 {admin.JitterSeconds}s 要小于间隔 {admin.IntervalSeconds}s，否则间隔可能变成 0");
-            if (admin.Threshold <= 0 || admin.ProcessWeight <= 0)
-                Error("威胁评分的阈值和扣分都要大于 0");
             if (string.IsNullOrWhiteSpace(admin.User))
                 Error("管理员得有个账号名");
+
+            ValidateAdminSchedule(admin.Schedule, "", Error);
+            ValidateAdminSuspicion(admin.Suspicion, "", Error);
+            ValidateAdminRoutine(admin.Routine, "", Error);
+
+            var ids = admin.Routine.Select(a => a.Id).ToHashSet();
+            foreach (string id in admin.Sweep)
+                if (!ids.Contains(id))
+                    Error($"彻底检查里的 \"{id}\" 不在 routine 里");
+            if (admin.Routine.Count == 0)
+                Error("管理员至少要有一件例行要做的事，否则他来了什么也不看");
+
+            var stepIdSet = level.Steps.Select(s => s.Id).ToHashSet();
+            foreach (var (stepId, stage) in admin.Stages)
+            {
+                string where = $"阶段 \"{stepId}\" ";
+                if (!stepIdSet.Contains(stepId))
+                    Error($"{where}对不上任何一个步骤 id");
+                if (stage.Schedule is { } schedule) ValidateAdminSchedule(schedule, where, Error);
+                if (stage.Suspicion is { } suspicion) ValidateAdminSuspicion(suspicion, where, Error);
+                if (stage.Routine is { } routine) ValidateAdminRoutine(routine, where, Error);
+            }
         }
 
         var stepIds = new HashSet<string>();
@@ -184,6 +200,38 @@ public sealed partial class LevelCatalog
         {
             if (level.Machines.Count == 0) Error("可玩关至少要有一台机器");
             if (level.Steps.Count == 0) Error("可玩关至少要有一个步骤，否则永远完成不了");
+        }
+    }
+
+    private static void ValidateAdminSchedule(AdminSchedule schedule, string where, Action<string> error)
+    {
+        if (schedule.IntervalSeconds < 5 || schedule.FirstPatrolSeconds < 0)
+            error($"{where}查岗间隔太短");
+        if (schedule.JitterSeconds < 0 || schedule.JitterSeconds >= schedule.IntervalSeconds)
+            error($"{where}查岗浮动 {schedule.JitterSeconds}s 要小于间隔 {schedule.IntervalSeconds}s，否则间隔可能变成 0");
+        if (schedule.MinActions < 0 || schedule.MaxActions < 1 || schedule.MinActions > schedule.MaxActions)
+            error($"{where}一次查岗做几件事的上下限不对：{schedule.MinActions}..{schedule.MaxActions}");
+        if (schedule.PauseMin < 0 || schedule.PauseMax < schedule.PauseMin)
+            error($"{where}命令之间的停顿不对：{schedule.PauseMin}..{schedule.PauseMax}");
+    }
+
+    private static void ValidateAdminSuspicion(SuspicionRules rules, string where, Action<string> error)
+    {
+        if (rules.ExposedAt <= 0) error($"{where}暴露阈值要大于 0");
+        if (rules.SweepAt <= 0 || rules.SweepAt > rules.ExposedAt)
+            error($"{where}彻底检查的阈值 {rules.SweepAt} 要在 1..{rules.ExposedAt} 之间，否则他永远不会认真查");
+        if (rules.CalmPerPatrol < 0) error($"{where}疑心消退不能是负数");
+        if (rules.SweepMultiplier < 1) error($"{where}彻底检查的倍率至少是 1");
+    }
+
+    private static void ValidateAdminRoutine(IReadOnlyList<AdminAction> routine, string where, Action<string> error)
+    {
+        var seen = new HashSet<string>();
+        foreach (var action in routine)
+        {
+            if (!seen.Add(action.Id)) error($"{where}例行动作 id \"{action.Id}\" 重复");
+            if (action.Chance is <= 0 or > 1) error($"{where}动作 \"{action.Id}\" 的概率 {action.Chance} 要在 0..1 之间");
+            if (action.Weight <= 0) error($"{where}动作 \"{action.Id}\" 的怀疑度要大于 0");
         }
     }
 

@@ -90,24 +90,42 @@ public class AdminTtyIntegrationTests
         await using var control = new ControlChannel(vm.Control!);
         await control.WaitReadyAsync(BootTimeout, cts.Token);
 
-        var definition = new AdminDefinition { Machine = "jump01", User = account.User, Threshold = 40 };
+        var definition = new AdminDefinition
+        {
+            Machine = "jump01",
+            User = account.User,
+            // ttyS0 是客户机的物理控制台，开机起就有个 shell 在上面，属于常态
+            Allow = new AdminAllow { Processes = ["syslogd*"], Sessions = ["ttyS2", "ttyS0"], Services = ["syslogd"] },
+            // 每样都必做、间隔压到最短：测试不等他磨蹭
+            Schedule = new AdminSchedule { MinActions = 2, MaxActions = 4, PauseMin = 0.2, PauseMax = 0.4 },
+            Routine =
+            [
+                new AdminAction { Id = "processes", Check = AdminCheck.Processes, Chance = 1, Weight = 20 },
+                new AdminAction { Id = "sessions", Check = AdminCheck.Sessions, Chance = 1, Weight = 20 },
+                new AdminAction { Id = "log", Check = AdminCheck.Log, Chance = 1, Weight = 25 },
+                new AdminAction { Id = "services", Check = AdminCheck.Services, Chance = 1, Weight = 30 },
+            ],
+        };
         using var tty = new TtySession(vm.Admin!);
         var agent = new AdminAgent(definition, account, tty, seed: 1);
 
-        // 先查一次：玩家什么都还没做，机器是干净的
+        // 先查一次：玩家还没登录也没留东西，这台机器是干净的
         var before = await agent.PatrolAsync(cts.Token);
         Assert.False(before.FoundSomething);
+        Assert.Equal(0, before.Suspicion);
         Assert.Equal(AdminActivity.Away, agent.Activity);   // 查完就下线
+        Assert.Contains(AdminCheck.Log, before.Did);        // 日志那一项也真的查了
 
-        // 玩家在自己的终端上留了个后台进程，然后管理员又来了
+        // 玩家坐到这台机器的终端前，还留了个后台进程
         await vm.Console!.SendAsync("sleep 600 &\n"u8.ToArray(), cts.Token);
         await Task.Delay(2000, cts.Token);
 
         var after = await agent.PatrolAsync(cts.Token);
+        Assert.True(after.FoundSomething);
         var finding = Assert.Single(after.Findings);
         Assert.Contains("sleep 600", finding.Subject);
         Assert.Contains("sleep 600", finding.Explanation);
-        Assert.Equal(definition.ProcessWeight, after.Score);
+        Assert.Equal(20, after.Suspicion);
 
         await cts.CancelAsync();
         try { await run; } catch (OperationCanceledException) { }

@@ -70,6 +70,22 @@ public sealed class VmSession : IAsyncDisposable, IDisposable
 
     public Task<bool> PingAsync(string target) => Control.PingAsync(target, _cts.Token);
 
+    /// <summary>
+    /// 等玩家终端那边的 shell 真正起来。往终端里送字之前必须先等到它。
+    /// </summary>
+    /// <remarks>
+    /// ready 信标只说明控制通道的代理起来了，比 ttyS0 上的 shell 早好几秒；
+    /// 之间敲进去的字会被丢掉。等不到就按老样子继续，别把流程卡死。
+    /// </remarks>
+    public async Task WaitConsoleReadyAsync(TimeSpan timeout)
+    {
+        try { await Control.WaitEventAsync("console", timeout, _cts.Token); }
+        catch (Exception ex) when (ex is TimeoutException or OperationCanceledException)
+        {
+            GD.PushWarning($"[level] {Spec.Name} 没等到控制台就绪信标");
+        }
+    }
+
     /// <summary>直接往 ttyS0 送字节，等同于玩家在终端里敲字。</summary>
     public Task SendToConsoleAsync(byte[] data) =>
         _launcher.Console!.SendAsync(data, _cts.Token);

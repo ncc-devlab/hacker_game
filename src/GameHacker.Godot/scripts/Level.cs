@@ -78,8 +78,10 @@ public partial class Level : Control
         if (level.Admin is { } adminDefinition)
         {
             _adminAccount = new AdminAccount(adminDefinition.User, NewPassword());
-            _adminPanel.Visible = true;
-            _threat.MaxValue = adminDefinition.Threshold;
+            // 高手模式（visibility: hidden）下界面上什么都不说，
+            // 玩家只能自己从机器上看出他来过
+            _adminPanel.Visible = adminDefinition.Visibility == AdminVisibility.Shown;
+            _threat.MaxValue = adminDefinition.Suspicion.ExposedAt;
         }
 
         _run = new LevelRun(level);
@@ -229,6 +231,8 @@ public partial class Level : Control
         if (_closing) return;
         GD.Print($"[level] 步骤完成: {step.Id}");
         ShowSteps();
+        // 玩家推进到下一步，管理员可能换一套作息和脾气
+        if (_run.CurrentStep is { } next) _admin?.EnterStage(next.Id);
         if (!_run.IsComplete)
         {
             SetStatus($"完成：{step.Title}", Colors.LightGreen);
@@ -271,6 +275,8 @@ public partial class Level : Control
         // 两个事件都在后台线程上触发，碰界面之前先回主线程
         _admin.ActivityChanged += _ => Callable.From(ShowAdmin).CallDeferred();
         _admin.PatrolCompleted += report => Callable.From(() => OnPatrolCompleted(report)).CallDeferred();
+        // 当前就停在某一步上，先把那一步的阶段设定应用上
+        if (_run.CurrentStep is { } step) _admin.EnterStage(step.Id);
         _ = _admin.RunAsync(_adminCts.Token);
         ShowAdmin();
     }
@@ -279,12 +285,14 @@ public partial class Level : Control
     {
         if (_closing || _admin is null) return;
         ShowAdmin();
-        if (report.FoundSomething)
-            SetStatus($"{_adminAccount!.User} 在 {report.Machine} 上发现了不对劲的东西", Colors.Orange);
+        if (report.FoundSomething && _admin.Visibility == AdminVisibility.Shown)
+            SetStatus(report.Sweep
+                ? $"{_adminAccount!.User} 把 {report.Machine} 从头查了一遍"
+                : $"{_adminAccount!.User} 在 {report.Machine} 上注意到了什么", Colors.Orange);
         if (report.Exposed) OnExposed();
     }
 
-    /// <summary>威胁评分到顶：任务失败。</summary>
+    /// <summary>怀疑度到顶：查实了，任务失败。</summary>
     /// <remarks>
     /// 失败之后按 MVP2 的设计应该能用快照复位到干净的初始状态重来，
     /// 那套还没做，现在只能退回选关重进。
@@ -312,17 +320,29 @@ public partial class Level : Control
     {
         if (_admin is null || !IsInstanceValid(_adminStatus)) return;
 
-        string machine = _level.Admin!.Machine;
+        // 阶段可能把他改成隐身（高手模式），也可能反过来
+        _adminPanel.Visible = _admin.Visibility == AdminVisibility.Shown;
+        if (!_adminPanel.Visible) return;
+
+        string machine = _admin.Machine;
         _adminStatus.Text = _admin.Activity switch
         {
             AdminActivity.LoggingIn => $"{_adminAccount!.User} 正在登录 {machine}",
-            AdminActivity.Checking => $"{_adminAccount!.User} 正在检查 {machine}",
-            _ => $"{_adminAccount!.User} 不在 {machine} 上。下次查岗约在 {Countdown(_admin.TimeToNextPatrol)} 后",
+            AdminActivity.Checking => $"{_adminAccount!.User} 登录着 {machine}，在随手翻",
+            AdminActivity.Sweeping => $"{_adminAccount!.User} 起了疑心，正在把 {machine} 从头查一遍",
+            _ => $"{_adminAccount!.User} 不在 {machine} 上。下次约在 {Countdown(_admin.TimeToNextPatrol)} 后",
         };
-        _adminStatus.Modulate = _admin.Activity == AdminActivity.Away ? Colors.White : new Color(1f, 0.8f, 0.4f);
+        _adminStatus.Modulate = _admin.Activity switch
+        {
+            AdminActivity.Sweeping => new Color(1f, 0.5f, 0.45f),
+            AdminActivity.Away => Colors.White,
+            _ => new Color(1f, 0.8f, 0.4f),
+        };
 
-        _threat.Value = _admin.Score;
-        // 这一栏只在有发现时才有内容：没被抓到的时候不该有任何提示，
+        _threat.MaxValue = _admin.ExposedAt;
+        _threat.Value = _admin.Suspicion;
+
+        // 这一栏只在他确实看出了东西时才有内容：没被注意到的时候界面不该有任何提示，
         // 否则玩家能靠界面反推自己有没有留痕
         if (_findings.GetChildCount() == _admin.Findings.Count) return;
         foreach (Node child in _findings.GetChildren()) child.QueueFree();
@@ -374,11 +394,20 @@ public partial class Level : Control
         string bootDetail;
         if (_sessions.Count >= 2)
         {
-            await TypeAsync(_sessions[1], $"ping -c2 {_level.Machines[0].Nics[0].Ip}\n");
-            bool done = await Task.WhenAny(_completed.Task, Task.Delay(TimeSpan.FromSeconds(20))) == _completed.Task;
+            await _sessions[1].WaitConsoleReadyAsync(TimeSpan.FromSeconds(30));
+
+            // 敲几次。就绪信标只说明 console_loop 开始跑了，getty 还要一瞬间才把
+            // shell 接到 tty 上，这中间送进去的字会被丢掉 —— 实测偶发。
+            // 玩家自己敲会发现没反应再敲一次，无人值守这边只能自己重试。
+            bool done = false;
+            for (int attempt = 0; attempt < 4 && !done; attempt++)
+            {
+                await TypeAsync(_sessions[1], $"ping -c2 {_level.Machines[0].Nics[0].Ip}\n");
+                done = await Task.WhenAny(_completed.Task, Task.Delay(TimeSpan.FromSeconds(6))) == _completed.Task;
+            }
             bootDetail = done
                 ? $"互通，关卡 {_level.Id} 判定完成，交换机已转发 {_switch!.FramesForwarded} 帧"
-                : $"关卡 {_level.Id} 20 秒内没有判定完成（停在第 {_run.CurrentIndex + 1} 步）—— 见 m0/run 下的日志";
+                : $"关卡 {_level.Id} 敲了 4 次 ping 都没判定完成（停在第 {_run.CurrentIndex + 1} 步）—— 见 m0/run 下的日志";
         }
         else bootDetail = $"关卡 {_level.Id} 只有 {_sessions.Count} 台机器，自检需要两台";
 
@@ -422,20 +451,19 @@ public partial class Level : Control
         string? script = System.Environment.GetEnvironmentVariable("GAMEHACKER_TYPE");
         if (string.IsNullOrWhiteSpace(script))
         {
+            await _sessions[0].WaitConsoleReadyAsync(TimeSpan.FromSeconds(30));
             await TypeAsync(_sessions[0], "uname -a; cat /sys/class/dmi/id/product_name\n");
             if (_sessions.Count >= 2)
                 await TypeAsync(_sessions[1], $"ping -c2 {_level.Machines[0].Nics[0].Ip}\n");
         }
         else
         {
-            // ready 信标来自 ttyS1 的代理，它比 ttyS0 上的 shell 早起来几秒。
-            // 不等这一下，字会送进一个还没人读的串口，直接丢掉
-            await Task.Delay(3000);
             foreach (string entry in script.Split(';', StringSplitOptions.RemoveEmptyEntries))
             {
                 string[] parts = entry.Split(':', 2);
                 var target = _sessions.FirstOrDefault(s => s.Spec.Name == parts[0]);
                 if (parts.Length < 2 || target is null) { GD.PushWarning($"[level] 看不懂的 GAMEHACKER_TYPE 条目: {entry}"); continue; }
+                await target.WaitConsoleReadyAsync(TimeSpan.FromSeconds(30));
                 await TypeAsync(target, parts[1] + "\n");
             }
         }

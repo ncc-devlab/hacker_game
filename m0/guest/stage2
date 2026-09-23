@@ -15,6 +15,7 @@ m0_mount_pty
 m0_setup_net
 m0_start_agent
 m0_start_admin_tty
+m0_start_services
 m0_disguise
 m0_banner
 m0_console_loop
