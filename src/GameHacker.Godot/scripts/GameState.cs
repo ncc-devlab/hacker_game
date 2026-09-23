@@ -36,12 +36,15 @@ public partial class GameState : Node
     /// <summary>正在玩（或将要进入）的关卡。</summary>
     public LevelDefinition? Current { get; private set; }
 
-    /// <summary>难度。决定来查岗的管理员有多专业，见 <see cref="GameHacker.Core.Admin.AdminSkillOdds"/>。</summary>
-    public Difficulty Difficulty => Progress.Difficulty;
+    /// <summary>
+    /// 游玩模式（新手 / 高级 / 专家）。全局选一次；来查岗的管理员有多专业跟着它和关卡走，
+    /// 见 <see cref="GameHacker.Core.Admin.AdminSkillOdds"/>。
+    /// </summary>
+    public PlayMode Mode => Progress.Mode;
 
     /// <summary>
     /// 开发用：<c>GAMEHACKER_ADMIN_SKILL=junior|regular|senior</c> 指定来的是哪一档管理员，
-    /// 盖过难度与关卡设定，方便挨个看三档的表现。
+    /// 盖过游玩模式与关卡设定，方便挨个看三档的表现。
     /// </summary>
     public static GameHacker.Core.Admin.AdminSkill? ForcedAdminSkill =>
         Enum.TryParse<GameHacker.Core.Admin.AdminSkill>(
@@ -152,10 +155,10 @@ public partial class GameState : Node
         SaveProgress();
     }
 
-    public void SetDifficulty(Difficulty difficulty)
+    public void SetMode(PlayMode mode)
     {
-        if (Progress.Difficulty == difficulty) return;
-        Progress.Difficulty = difficulty;
+        if (Progress.Mode == mode) return;
+        Progress.Mode = mode;
         SaveProgress();
     }
 

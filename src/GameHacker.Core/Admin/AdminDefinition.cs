@@ -1,3 +1,5 @@
+using GameHacker.Core.Levels;
+
 namespace GameHacker.Core.Admin;
 
 /// <summary>管理员查岗时会做的一件事。</summary>
@@ -115,9 +117,9 @@ public sealed record AdminAllow
 /// </summary>
 /// <remarks>
 /// <para>脚本真的写在客户机的 <c>~/bin</c> 里，内容就是这几项检查对应的命令，
-/// 每段前面打一行 <c>== 检查名 ==</c>。玩家能翻到它、读懂新手管理员每天看什么 ——
+/// 每段前面打一行 <c>== 检查名 ==</c>。玩家能翻到它、读懂实习运维每天看什么 ——
 /// 这本身就是一种侦察。</para>
-/// <para>玩家也能改它。新手只会看脚本打印出来的东西，脚本被做了手脚他看不出来；
+/// <para>玩家也能改它。实习运维只会看脚本打印出来的东西，脚本被做了手脚他看不出来；
 /// 但脚本整个没了、跑不起来，他会注意到。</para>
 /// </remarks>
 public sealed record AdminScript
@@ -170,9 +172,16 @@ public sealed record AdminDefinition
     public IReadOnlyList<string> Sweep { get; init; } = [];
 
     /// <summary>
-    /// 强制这一关的管理员是哪一档，无视玩家选的难度。不写就按难度抽。
+    /// 强制这一关的管理员是哪一档，无视游玩模式。不写就按 <see cref="SkillOdds"/> 抽。
     /// </summary>
     public AdminSkill? Skill { get; init; }
+
+    /// <summary>
+    /// 这一关在各游玩模式下三档管理员出现的概率。没写的模式用
+    /// <see cref="AdminSkillOdds.Default"/>。每个模式里的概率加起来要是 1。
+    /// </summary>
+    public IReadOnlyDictionary<PlayMode, IReadOnlyDictionary<AdminSkill, double>> SkillOdds { get; init; } =
+        new Dictionary<PlayMode, IReadOnlyDictionary<AdminSkill, double>>();
 
     /// <summary>
     /// 在内置的某一档做派上改几处，见 <see cref="AdminProfile"/>。键是档位。
@@ -182,7 +191,7 @@ public sealed record AdminDefinition
 
     /// <summary>
     /// 他家目录里的运维脚本。不写就用 <see cref="AdminProfile.DefaultScripts"/>
-    /// —— 新手的例行检查就是跑它们。
+    /// —— 实习运维的例行检查就是跑它们。
     /// </summary>
     public IReadOnlyList<AdminScript>? Scripts { get; init; }
 
@@ -204,9 +213,12 @@ public sealed record AdminDefinition
     /// <summary>某一档管理员平时做的事：他的预设给了就用预设，否则用关卡写的 <see cref="Routine"/>。</summary>
     public IReadOnlyList<AdminAction> RoutineFor(AdminSkill skill) => ProfileFor(skill).Routine ?? Routine;
 
-    /// <summary>这一关可能出现哪几档。强制了档位就只有那一档。</summary>
+    /// <summary>这一关在哪个模式下都可能出现的那几档。强制了档位就只有那一档。</summary>
     public IEnumerable<AdminSkill> PossibleSkills =>
-        Skill is { } forced ? [forced] : Enum.GetValues<AdminSkill>();
+        Skill is { } forced
+            ? [forced]
+            : Enum.GetValues<AdminSkill>().Where(skill =>
+                Enum.GetValues<PlayMode>().Any(mode => AdminSkillOdds.For(mode, this).GetValueOrDefault(skill) > 0));
 
     /// <summary>按关卡步骤 id 挂的阶段设定。玩家推进到那一步时生效。</summary>
     public IReadOnlyDictionary<string, AdminStage> Stages { get; init; } =

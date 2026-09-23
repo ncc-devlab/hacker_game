@@ -79,24 +79,24 @@ public class LevelProgressTests
     }
 
     [Fact]
-    public void 难度跟着存档走_重置进度不动它()
+    public void 游玩模式跟着存档走_重置进度不动它()
     {
-        var progress = new LevelProgress(["lab"]) { Difficulty = Difficulty.Hard };
+        var progress = new LevelProgress(["lab"]) { Mode = PlayMode.Expert };
         var loaded = LevelProgress.FromJson(progress.ToJson(), out string? problem);
         Assert.Null(problem);
-        Assert.Equal(Difficulty.Hard, loaded.Difficulty);
-        Assert.Contains("\"hard\"", progress.ToJson());
+        Assert.Equal(PlayMode.Expert, loaded.Mode);
+        Assert.Contains("\"expert\"", progress.ToJson());
 
         loaded.Reset();
-        Assert.Equal(Difficulty.Hard, loaded.Difficulty);
+        Assert.Equal(PlayMode.Expert, loaded.Mode);
     }
 
     [Fact]
-    public void 老存档没有难度时按普通()
+    public void 老存档没有模式时按高级模式()
     {
         var loaded = LevelProgress.FromJson("""{ "version": 1, "completed": ["lab"] }""", out string? problem);
         Assert.Null(problem);
-        Assert.Equal(Difficulty.Normal, loaded.Difficulty);
+        Assert.Equal(PlayMode.Advanced, loaded.Mode);
         Assert.True(loaded.IsCompleted("lab"));
     }
 }

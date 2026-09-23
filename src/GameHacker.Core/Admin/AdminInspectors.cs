@@ -84,10 +84,8 @@ public sealed partial class AdminInspectors(AdminAllow allow, string machine, st
     /// </remarks>
     public IReadOnlyList<string> ProvisionCommands()
     {
-        // 行编辑按终端宽度折行，串口默认只有 80 列；折了行回显就对不上，拆不出输出。
-        // 这些写文件的命令是开局布景，不是他的日常，不进他的命令历史 ——
-        // 历史里该留的是他查岗敲的那些，那是玩家能侦察到的东西
-        var commands = new List<string> { "HISTFILE=/dev/null", "stty cols 250", "mkdir -p ~/bin", "cd ~/bin" };
+        // 行编辑按终端宽度折行，串口默认只有 80 列；折了行回显就对不上，拆不出输出
+        var commands = new List<string> { "stty cols 250", "mkdir -p ~/bin", "cd ~/bin" };
         foreach (var script in _scripts.Values)
         {
             commands.Add($": > {script.Name}");
@@ -95,6 +93,11 @@ public sealed partial class AdminInspectors(AdminAllow allow, string machine, st
             commands.Add($"chmod 755 {script.Name}");
         }
         commands.Add("cd");
+        // 这些写文件的命令是开局布景，不是他的日常，不该进他的命令历史 ——
+        // 历史里该留的是他查岗敲的那些，那是玩家能侦察到的东西。
+        // 改 HISTFILE 没用（ash 启动时就定下了往哪写）；ash 读到一行就先记进历史再执行，
+        // 所以清空这一句连自己一起清掉，最后只剩下线时那句 exit
+        commands.Add(": > ~/.ash_history");
         return commands;
     }
 
@@ -223,7 +226,7 @@ public sealed partial class AdminInspectors(AdminAllow allow, string machine, st
     /// </summary>
     /// <remarks>
     /// 玩家开个 <c>nc -l</c> 等回连、起个转发，进程名可以起得人畜无害，
-    /// 但端口藏不住 —— 这是老手爱看它的原因。只看监听，不看已建立的连接：
+    /// 但端口藏不住 —— 这是资深运维爱看它的原因。只看监听，不看已建立的连接：
     /// 那些来来去去，报出来只是噪音。
     /// </remarks>
     private List<AdminFinding> Ports(string output)
@@ -260,7 +263,7 @@ public sealed partial class AdminInspectors(AdminAllow allow, string machine, st
     /// 看脚本打印的东西：按 <c>== 检查名 ==</c> 切成段，每段交给那项检查去看。
     /// </summary>
     /// <remarks>
-    /// <para>新手只看脚本打印的。脚本被改成不打印某一段，他就不知道那一段该有；
+    /// <para>实习运维只看脚本打印的。脚本被改成不打印某一段，他就不知道那一段该有；
     /// 这是真实的攻击手法，留给玩家。</para>
     /// <para>但一段都切不出来 —— 脚本没了、被清空了、跑不起来 —— 他每天跑的东西
     /// 突然不灵了，这个他看得出来。</para>

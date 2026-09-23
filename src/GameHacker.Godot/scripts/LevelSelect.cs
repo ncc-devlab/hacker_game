@@ -25,7 +25,7 @@ public partial class LevelSelect : Control
     private Button _reset = null!;
     private Label _footer = null!;
     private ConfirmationDialog _confirmReset = null!;
-    private OptionButton _difficulty = null!;
+    private OptionButton _mode = null!;
 
     private GameState State => GameState.Instance;
     private LevelDefinition? _selected;
@@ -63,14 +63,17 @@ public partial class LevelSelect : Control
         _confirmReset.Confirmed += () => { State.ResetProgress(); Refresh(); };
         _reset.Pressed += () => _confirmReset.PopupCentered();
 
-        // 难度只管来查岗的是哪一档管理员；放在重置按钮旁边，同属「全局设置」
-        _difficulty = new OptionButton { TooltipText = "决定来查岗的管理员有多专业。有的关卡会指定管理员，不受难度影响。" };
-        _difficulty.AddItem("简单：多半是只跑脚本的新手", (int)Difficulty.Easy);
-        _difficulty.AddItem("普通", (int)Difficulty.Normal);
-        _difficulty.AddItem("困难：常碰上细查的老手", (int)Difficulty.Hard);
-        _difficulty.Select(_difficulty.GetItemIndex((int)State.Difficulty));
-        _difficulty.ItemSelected += index => State.SetDifficulty((Difficulty)_difficulty.GetItemId((int)index));
-        _reset.AddSibling(_difficulty);
+        // 游玩模式全局选一次，放在重置按钮旁边，同属「全局设置」
+        _mode = new OptionButton
+        {
+            TooltipText = "新手模式给初学者，专家模式贴近实际渗透。\n来查岗的管理员有多专业也跟着模式和关卡走。",
+        };
+        _mode.AddItem("新手模式", (int)PlayMode.Novice);
+        _mode.AddItem("高级模式", (int)PlayMode.Advanced);
+        _mode.AddItem("专家模式", (int)PlayMode.Expert);
+        _mode.Select(_mode.GetItemIndex((int)State.Mode));
+        _mode.ItemSelected += index => State.SetMode((PlayMode)_mode.GetItemId((int)index));
+        _reset.AddSibling(_mode);
 
         _footer.Text = State.CatalogError ?? State.ProgressProblem ?? "";
 

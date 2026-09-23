@@ -179,6 +179,14 @@ public sealed partial class LevelCatalog
                 else if (user == "root" || user == admin.User) Error($"管理员不能改 {user} 的口令");
             }
 
+            foreach (var (mode, odds) in admin.SkillOdds)
+            {
+                string where = $"{Kebab(mode)} 模式的 skillOdds ";
+                if (odds.Values.Any(p => p is < 0 or > 1)) Error($"{where}里的概率要在 0..1 之间");
+                else if (Math.Abs(odds.Values.Sum() - 1) > 0.001)
+                    Error($"{where}加起来是 {odds.Values.Sum():0.###}，要是 1");
+            }
+
             foreach (var (skill, tier) in admin.Tiers)
                 ValidateAdminProfile(tier, $"档位 {Kebab(skill)} ", Error);
 
@@ -188,7 +196,7 @@ public sealed partial class LevelCatalog
                 if (!ids.Contains(id))
                     Error($"彻底检查里的 \"{id}\" 不在 routine 里");
 
-            // 难度会抽到哪一档，这一关就得对哪一档说得通
+            // 哪个模式下可能抽到哪一档，这一关就得对哪一档说得通
             foreach (var skill in admin.PossibleSkills)
             {
                 string who = $"{Kebab(skill)} 档的管理员";

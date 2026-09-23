@@ -78,13 +78,11 @@ public partial class Level : Control
         // 口令每局现生成，关卡文件里不留 —— 玩家翻关卡文件也拿不到管理员的账号
         if (level.Admin is { } adminDefinition)
         {
-            // root 口令只在他可能改别人口令时才设：他得以 root 登录才改得了
-            _adminAccount = new AdminAccount(adminDefinition.User, NewPassword(),
-                                             adminDefinition.PasswordTargets.Count > 0 ? NewPassword() : null);
-            // 这一局来的是谁：关卡指定了就是那一档，否则按难度抽
+            _adminAccount = new AdminAccount(adminDefinition.User, NewPassword());
+            // 这一局来的是谁：关卡指定了就是那一档，否则按这一关在当前模式下的概率抽
             _adminSkill = GameState.ForcedAdminSkill
-                          ?? AdminSkillOdds.Roll(GameState.Instance.Difficulty, adminDefinition.Skill, new Random());
-            GD.Print($"[level] 管理员 {adminDefinition.User}：{SkillName(_adminSkill)}（难度 {GameState.Instance.Difficulty}）");
+                          ?? AdminSkillOdds.Roll(GameState.Instance.Mode, adminDefinition, new Random());
+            GD.Print($"[level] 管理员 {adminDefinition.User}：{SkillName(_adminSkill)}（{GameState.Instance.Mode} 模式）");
             // 高手模式（visibility: hidden）下界面上什么都不说，
             // 玩家只能自己从机器上看出他来过
             _adminPanel.Visible = adminDefinition.Visibility == AdminVisibility.Shown;
@@ -378,9 +376,9 @@ public partial class Level : Control
 
     private static string SkillName(AdminSkill skill) => skill switch
     {
-        AdminSkill.Junior => "新手",
-        AdminSkill.Senior => "老手",
-        _ => "熟手",
+        AdminSkill.Junior => "实习运维",
+        AdminSkill.Senior => "资深运维",
+        _ => "运维",
     };
 
     private static string Countdown(TimeSpan left) =>

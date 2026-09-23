@@ -1,3 +1,4 @@
+using System.Text.RegularExpressions;
 using GameHacker.Core.Channels;
 using GameHacker.Core.Qemu;
 
@@ -25,9 +26,9 @@ public enum AdminActivity
 /// <para><b>两段式的疑心</b>（见 <see cref="SuspicionMeter"/>）：随手看的那几眼很难要命，
 /// 但每一处小事都在攒疑心；攒够了他会认真翻一遍，那一遍基本什么都藏不住。
 /// 正因为平时那几眼不致命，界面上不显示他的动向（高手模式）才玩得下去。</para>
-/// <para><b>人和人不一样</b>（见 <see cref="AdminSkill"/>）。新手只跑家目录里现成的脚本；
-/// 老手挨个细看，一处异常就可能当场全查，还可能顺手把口令改了。来的是谁由难度抽，
-/// 关卡也可以指定。</para>
+/// <para><b>人和人不一样</b>（见 <see cref="AdminSkill"/>）。实习运维只跑家目录里现成的脚本；
+/// 资深运维挨个细看，一处异常就可能当场全查，还可能顺手把口令改了。来的是谁跟着
+/// 游玩模式和关卡走，关卡也可以指定。</para>
 /// <para><b>行为是关卡数据。</b> 查什么、多大概率查、什么算可疑、什么时候来，
 /// 全在 <see cref="AdminDefinition"/> 里；不同阶段还能整套换掉，见
 /// <see cref="EnterStage"/>。</para>
@@ -107,7 +108,7 @@ public sealed class AdminAgent
     /// </summary>
     /// <remarks>
     /// <para>已经攒下的怀疑度不清零 —— 阶段变了，他不会忘掉之前看见的事。</para>
-    /// <para>阶段给的怀疑度规则照样按档位换算：老手在哪个阶段都比新手敏感。</para>
+    /// <para>阶段给的怀疑度规则照样按档位换算：资深运维在哪个阶段都比实习的敏感。</para>
     /// </remarks>
     public void EnterStage(string stepId)
     {
@@ -131,7 +132,7 @@ public sealed class AdminAgent
         catch (Exception ex) when (ex is TtyTimeoutException or InvalidOperationException
                                       or IOException or ObjectDisposedException)
         {
-            // 脚本没放进去，新手来的时候会发现脚本跑不起来 —— 那也是真实的状态，不拦着
+            // 脚本没放进去，实习运维来的时候会发现脚本跑不起来 —— 那也是真实的状态，不拦着
             SetActivity(AdminActivity.Away);
         }
         catch (OperationCanceledException) { return; }
@@ -193,7 +194,7 @@ public sealed class AdminAgent
         var (did, seen) = await RunActionsAsync(actions, cancellationToken).ConfigureAwait(false);
         var report = Settle(sweep, did, seen);
 
-        // 老手随手一看就够到阈值的话，可能不等下次，当场把剩下的也翻一遍
+        // 资深运维随手一看就够到阈值的话，可能不等下次，当场把剩下的也翻一遍
         if (ShouldEscalate(report))
         {
             SetActivity(AdminActivity.Sweeping);
@@ -203,10 +204,10 @@ public sealed class AdminAgent
             report = Escalate(report, more, moreSeen);
         }
 
-        await _tty.LogoutAsync(CommandTimeout, cancellationToken).ConfigureAwait(false);
-
         if (ShouldChangePasswords(report))
             report = report with { PasswordsChanged = await ChangePasswordsAsync(cancellationToken).ConfigureAwait(false) };
+
+        await _tty.LogoutAsync(CommandTimeout, cancellationToken).ConfigureAwait(false);
 
         SetActivity(AdminActivity.Away);
         PatrolCompleted?.Invoke(report);
@@ -264,52 +265,51 @@ public sealed class AdminAgent
         && Chance(_profile.SweepOnTheSpotChance ?? 0);
 
     /// <summary>
-    /// 这次要不要改口令。关卡得给了要改的账号，游戏得知道 root 口令（他要 root 才改得了别人的）；
-    /// 看出了东西时概率高得多。
+    /// 这次要不要改口令。关卡得给了要改的账号；看出了东西时概率高得多。
     /// </summary>
     public bool ShouldChangePasswords(PatrolReport report)
     {
-        if (_definition.PasswordTargets.Count == 0 || Account.RootPassword is null || report.Exposed) return false;
+        if (_definition.PasswordTargets.Count == 0 || report.Exposed) return false;
         double chance = report.FoundSomething ? _profile.PasswordChanceOnFinding ?? 0 : _profile.PasswordChance ?? 0;
         return Chance(chance);
     }
 
     /// <summary>
-    /// 以 root 登录，把关卡指定的那些账号的口令改掉。返回确实改成了的账号。
+    /// 趁还登录着，用 <c>sudo passwd</c> 把关卡指定的那些账号的口令改掉。返回确实改成了的账号。
     /// </summary>
     /// <remarks>
-    /// <para>客户机的 busybox 没有 setuid，他自己的账号改不了别人的口令，
-    /// 所以要从同一个终端再以 root 登录一次 —— 串口控制台上这很常见。</para>
-    /// <para>先把 <c>HISTFILE</c> 指到 <c>/dev/null</c>：老手不会把新口令留在
-    /// root 的命令历史里。他自己查岗的命令历史倒是照留，那是玩家能侦察到的东西。</para>
+    /// <para>客户机的 busybox 没有 setuid，他自己的账号改不了别人的口令，要靠 sudo
+    /// （他在 sudoers 里，要口令）。新口令是在 <c>passwd</c> 的提示后面敲进去的，
+    /// 不在命令行上，所以不进他的命令历史 —— 历史里只有 <c>sudo passwd ops</c> 这一句，
+    /// sudo 也会往系统日志里记一笔。这两处是玩家能察觉的痕迹。</para>
     /// <para>中途出错不影响这次查岗的结论，只是这回没改成。</para>
     /// </remarks>
     private async Task<IReadOnlyList<string>> ChangePasswordsAsync(CancellationToken cancellationToken)
     {
         var changed = new List<string>();
-        try
+        foreach (string user in _definition.PasswordTargets)
         {
-            await _tty.LoginAsync("root", Account.RootPassword!, LoginTimeout, cancellationToken).ConfigureAwait(false);
-            await _tty.RunAsync("HISTFILE=/dev/null", CommandTimeout, cancellationToken).ConfigureAwait(false);
-            foreach (string user in _definition.PasswordTargets)
+            string password = NewPassword();
+            string output;
+            try
             {
-                string password = NewPassword();
-                string output = await _tty.RunAsync($"echo '{user}:{password}' | chpasswd", CommandTimeout,
-                                                    cancellationToken).ConfigureAwait(false);
-                // busybox 的 chpasswd 成功时会说一句 password for 'x' changed；账号不存在是 unknown user
-                if (!output.Contains($"password for '{user}' changed", StringComparison.Ordinal)) continue;
-                lock (_gate) _passwords[user] = password;
-                changed.Add(user);
+                output = await _tty.RunInteractiveAsync($"sudo passwd {user}",
+                [
+                    (SudoPrompt, Account.Password),
+                    (NewPasswordPrompt, password),
+                ], CommandTimeout, cancellationToken).ConfigureAwait(false);
             }
-            await _tty.LogoutAsync(CommandTimeout, cancellationToken).ConfigureAwait(false);
-        }
-        catch (Exception ex) when (ex is TtyTimeoutException or InvalidOperationException)
-        {
-            try { await _tty.LogoutAsync(CommandTimeout, cancellationToken).ConfigureAwait(false); }
-            catch (TtyTimeoutException) { }
+            catch (TtyTimeoutException) { break; }
+            // busybox 的 passwd 改成了会说 password for x changed by root；账号不存在是 unknown user
+            if (!output.Contains($"password for {user} changed", StringComparison.Ordinal)) continue;
+            lock (_gate) _passwords[user] = password;
+            changed.Add(user);
         }
         return changed;
     }
+
+    private static readonly Regex SudoPrompt = new(@"\[sudo\] password for [^\n]*: ?$", RegexOptions.Compiled);
+    private static readonly Regex NewPasswordPrompt = new(@"(New|Retype) password: ?$", RegexOptions.Compiled);
 
     private static string NewPassword() =>
         System.Security.Cryptography.RandomNumberGenerator.GetString(PasswordAlphabet, 14);

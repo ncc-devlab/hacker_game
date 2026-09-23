@@ -3,13 +3,17 @@ using GameHacker.Core.Levels;
 namespace GameHacker.Core.Admin;
 
 /// <summary>管理员的专业程度。</summary>
+/// <remarks>
+/// 界面上叫「实习运维 / 运维 / 资深运维」，刻意不用「新手 / 老手」——
+/// 那是玩家的游玩模式（<see cref="PlayMode"/>）的叫法，混在一起玩家会以为是一回事。
+/// </remarks>
 public enum AdminSkill
 {
-    /// <summary>新手：只会跑家目录里那几个现成的运维脚本，脚本没打印的他就看不见。</summary>
+    /// <summary>实习运维：只会跑家目录里那几个现成的运维脚本，脚本没打印的他就看不见。</summary>
     Junior,
-    /// <summary>熟手：照关卡写的例行检查来，随手看几样。</summary>
+    /// <summary>运维：照关卡写的例行检查来，随手看几样。</summary>
     Regular,
-    /// <summary>老手：进程、端口、服务、临时文件挨个细看；一点异常就可能当场全查，还可能直接改口令。</summary>
+    /// <summary>资深运维：进程、端口、服务、临时文件挨个细看；一点异常就可能当场全查，还可能直接改口令。</summary>
     Senior,
 }
 
@@ -21,7 +25,7 @@ public enum AdminSkill
 /// 查岗频率这些是关卡的事；同一台机器换个人来查，区别在手法和脾气上，放在这里。</para>
 /// <para><b>对怀疑度用倍率而不是直接给值。</b> 关卡的阶段（<see cref="AdminStage"/>）
 /// 会整套换掉怀疑度规则，档位要是也直接给值，两边就只能有一个说了算。
-/// 用倍率的话，「到了掩盖那一步他更敏感」和「老手本来就敏感」可以叠在一起。</para>
+/// 用倍率的话，「到了掩盖那一步他更敏感」和「资深运维本来就敏感」可以叠在一起。</para>
 /// <para>所有字段都可以不写：关卡在 <c>tiers</c> 里只写想改的那几处，
 /// 其余沿用 <see cref="Preset"/>。</para>
 /// </remarks>
@@ -36,10 +40,10 @@ public sealed record AdminProfile
     /// </summary>
     public IReadOnlyList<string>? Sweep { get; init; }
 
-    /// <summary>彻底检查阈值的倍率。老手的阈值低到一处异常就够。</summary>
+    /// <summary>彻底检查阈值的倍率。资深运维的阈值低到一处异常就够。</summary>
     public double? SweepAtScale { get; init; }
 
-    /// <summary>疑心消退的倍率。新手忘得快，老手记仇。</summary>
+    /// <summary>疑心消退的倍率。实习的忘得快，资深的记仇。</summary>
     public double? CalmScale { get; init; }
 
     /// <summary>彻底检查时的怀疑度倍数再加几。</summary>
@@ -54,11 +58,11 @@ public sealed record AdminProfile
     /// <summary>这次查岗看出了东西时改口令的概率。起了疑心的人第一反应就是先把门锁上。</summary>
     public double? PasswordChanceOnFinding { get; init; }
 
-    /// <summary>一次查岗最少 / 最多做几件事，盖过关卡作息里的值。老手一次看得多。</summary>
+    /// <summary>一次查岗最少 / 最多做几件事，盖过关卡作息里的值。资深的一次看得多。</summary>
     public int? MinActions { get; init; }
     public int? MaxActions { get; init; }
 
-    /// <summary>命令之间停顿的倍率。新手敲得慢，老手敲得快。</summary>
+    /// <summary>命令之间停顿的倍率。实习的敲得慢，资深的敲得快。</summary>
     public double? PauseScale { get; init; }
 
     /// <summary>关卡没写 <c>scripts</c> 时，他家目录里的那两个脚本。</summary>
@@ -174,30 +178,43 @@ public sealed record AdminProfile
     }
 }
 
-/// <summary>难度决定来的是哪一档管理员。</summary>
+/// <summary>这一局来的是哪一档管理员：跟着游玩模式和关卡本身走。</summary>
 public static class AdminSkillOdds
 {
-    /// <summary>各难度下三档出现的概率，依次是新手、熟手、老手。</summary>
-    public static IReadOnlyDictionary<AdminSkill, double> For(Difficulty difficulty) => difficulty switch
+    /// <summary>关卡没写 <c>skillOdds</c> 时，各模式下三档出现的概率。</summary>
+    /// <remarks>
+    /// 新手模式里碰不到资深运维：初学者先要学会隐蔽本身，而不是跟一个看一眼就翻脸的人斗。
+    /// 专家模式贴近实际渗透，多半是会细查的人。
+    /// </remarks>
+    public static IReadOnlyDictionary<AdminSkill, double> Default(PlayMode mode) => mode switch
     {
-        Difficulty.Easy => Odds(0.70, 0.25, 0.05),
-        Difficulty.Hard => Odds(0.10, 0.40, 0.50),
-        _ => Odds(0.35, 0.45, 0.20),
+        PlayMode.Novice => Odds(0.80, 0.20, 0.00),
+        PlayMode.Expert => Odds(0.05, 0.35, 0.60),
+        _ => Odds(0.30, 0.50, 0.20),
     };
 
+    /// <summary>这一关在某个模式下三档出现的概率：关卡写了就用关卡的，否则用默认。</summary>
+    public static IReadOnlyDictionary<AdminSkill, double> For(PlayMode mode, AdminDefinition definition) =>
+        definition.SkillOdds.TryGetValue(mode, out var odds) ? odds : Default(mode);
+
     /// <summary>
-    /// 这一局来的是谁。关卡强制了档位就是那一档；否则按难度抽。
+    /// 这一局来的是谁。关卡强制了档位就是那一档；否则按这一关在这个模式下的概率抽。
     /// </summary>
-    public static AdminSkill Roll(Difficulty difficulty, AdminSkill? forced, Random random)
+    public static AdminSkill Roll(PlayMode mode, AdminDefinition definition, Random random)
     {
-        if (forced is { } skill) return skill;
-        double r = random.NextDouble();
-        foreach (var (candidate, odds) in For(difficulty))
+        if (definition.Skill is { } skill) return skill;
+        var odds = For(mode, definition);
+        double r = random.NextDouble() * odds.Values.Sum();
+        AdminSkill last = AdminSkill.Regular;
+        foreach (var candidate in Enum.GetValues<AdminSkill>())
         {
-            if (r < odds) return candidate;
-            r -= odds;
+            double p = odds.GetValueOrDefault(candidate);
+            if (p <= 0) continue;
+            last = candidate;
+            if (r < p) return candidate;
+            r -= p;
         }
-        return AdminSkill.Senior;   // 浮点累加差一点点的时候
+        return last;   // 浮点累加差一点点的时候
     }
 
     private static Dictionary<AdminSkill, double> Odds(double junior, double regular, double senior) => new()

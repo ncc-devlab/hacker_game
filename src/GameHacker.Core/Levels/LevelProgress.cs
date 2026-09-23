@@ -30,9 +30,9 @@ public sealed class LevelProgress
     public IReadOnlyCollection<string> Completed => _completed;
 
     /// <summary>
-    /// 玩家选的难度。跟着存档走，但不算「进度」：重置进度不会把它改回去。
+    /// 玩家选的游玩模式。跟着存档走，但不算「进度」：重置进度不会把它改回去。
     /// </summary>
-    public Difficulty Difficulty { get; set; } = Difficulty.Normal;
+    public PlayMode Mode { get; set; } = PlayMode.Advanced;
 
     public bool IsCompleted(string id) => _completed.Contains(id);
 
@@ -58,7 +58,7 @@ public sealed class LevelProgress
     };
 
     public string ToJson() => JsonSerializer.Serialize(
-        new Dto(FormatVersion, [.. _completed.Order(StringComparer.Ordinal)], Difficulty), Json);
+        new Dto(FormatVersion, [.. _completed.Order(StringComparer.Ordinal)], Mode), Json);
 
     /// <summary>
     /// 从存档文本恢复。存档坏了不抛异常而是返回空进度，并在 <paramref name="problem"/>
@@ -74,8 +74,8 @@ public sealed class LevelProgress
             if (dto is null) { problem = "存档内容为空"; return new LevelProgress(); }
             if (dto.Version > FormatVersion)
                 problem = $"存档版本 {dto.Version} 比游戏新（{FormatVersion}），按能读懂的部分加载";
-            // 老存档没有这个字段，按普通难度
-            return new LevelProgress(dto.Completed ?? []) { Difficulty = dto.Difficulty ?? Difficulty.Normal };
+            // 老存档没有这个字段，按高级模式 —— 第一版做的就是这一档
+            return new LevelProgress(dto.Completed ?? []) { Mode = dto.Mode ?? PlayMode.Advanced };
         }
         catch (JsonException ex)
         {
@@ -102,5 +102,5 @@ public sealed class LevelProgress
         return File.Exists(path) ? FromJson(File.ReadAllText(path), out problem) : new LevelProgress();
     }
 
-    private sealed record Dto(int Version, List<string>? Completed, Difficulty? Difficulty = null);
+    private sealed record Dto(int Version, List<string>? Completed, PlayMode? Mode = null);
 }

@@ -57,11 +57,10 @@ public class AdminSkillTests
         PasswordTargets = ["ops"],
     };
 
-    private static readonly AdminAccount Account = new("opsadm", "pw", "rootpw");
+    private static readonly AdminAccount Account = new("opsadm", "pw");
 
-    private static AdminAgent NewAgent(AdminSkill skill, AdminDefinition? definition = null, int seed = 1,
-                                       AdminAccount? account = null) =>
-        new(definition ?? Definition, account ?? Account, null!, seed, skill);
+    private static AdminAgent NewAgent(AdminSkill skill, AdminDefinition? definition = null, int seed = 1) =>
+        new(definition ?? Definition, Account, null!, seed, skill);
 
     private static AdminInspectors NewInspectors() => new(Allow, "jump01", "opsadm");
 
@@ -128,7 +127,7 @@ public class AdminSkillTests
     }
 
     [Fact]
-    public void 运维脚本_被改成只打印一部分_新手看不出来()
+    public void 运维脚本_被改成只打印一部分_实习运维看不出来()
     {
         // 真实的攻击手法：让他的脚本少打印一段。他只看脚本给的，不知道那段该有
         var daily = new AdminAction { Id = "daily", Check = AdminCheck.Script, Script = "daily-check.sh" };
@@ -157,7 +156,7 @@ public class AdminSkillTests
     // --- 三档人 -------------------------------------------------------------
 
     [Fact]
-    public void 新手只跑脚本()
+    public void 实习运维只跑脚本()
     {
         var agent = NewAgent(AdminSkill.Junior);
         for (int i = 0; i < 20; i++)
@@ -166,7 +165,7 @@ public class AdminSkillTests
     }
 
     [Fact]
-    public void 熟手照关卡写的来()
+    public void 运维照关卡写的来()
     {
         var agent = NewAgent(AdminSkill.Regular);
         Assert.Equal(["sessions"], agent.SweepActions().Select(a => a.Id));
@@ -174,7 +173,7 @@ public class AdminSkillTests
     }
 
     [Fact]
-    public void 老手看得细_端口和临时文件都在他的手法里_彻底检查全做()
+    public void 资深运维看得细_端口和临时文件都在他的手法里_彻底检查全做()
     {
         var agent = NewAgent(AdminSkill.Senior);
         var checks = agent.SweepActions().Select(a => a.Check).ToList();
@@ -182,7 +181,7 @@ public class AdminSkillTests
         Assert.Contains(AdminCheck.Files, checks);
         Assert.Contains(AdminCheck.Processes, checks);
         Assert.Contains(AdminCheck.Services, checks);
-        // 关卡的 sweep 是按关卡那套 routine 写的，不拿来裁老手的
+        // 关卡的 sweep 是按关卡那套 routine 写的，不拿来裁资深运维的
         Assert.Equal(6, checks.Count);
 
         var rounds = Enumerable.Range(0, 20).Select(_ => agent.PickActions().Count).ToList();
@@ -190,7 +189,7 @@ public class AdminSkillTests
     }
 
     [Fact]
-    public void 老手的彻底检查阈值极低_一处异常就够()
+    public void 资深运维的彻底检查阈值极低_一处异常就够()
     {
         var senior = NewAgent(AdminSkill.Senior);
         Assert.Equal(10, senior.SweepAt);        // 40 × 0.25
@@ -198,7 +197,7 @@ public class AdminSkillTests
         senior.Settle(false, [AdminCheck.Processes], Seen(20, Stray("nc -l -p 4444")));
         Assert.True(senior.SweepAt <= senior.Suspicion);
 
-        // 同一处异常，熟手只是起疑
+        // 同一处异常，运维只是起疑
         var regular = NewAgent(AdminSkill.Regular);
         regular.Settle(false, [AdminCheck.Processes], Seen(20, Stray("nc -l -p 4444")));
         Assert.True(regular.Suspicion < regular.SweepAt);
@@ -225,7 +224,7 @@ public class AdminSkillTests
     }
 
     [Fact]
-    public void 老手可能当场全查_并按彻底检查的倍数记()
+    public void 资深运维可能当场全查_并按彻底检查的倍数记()
     {
         var definition = Definition with
         {
@@ -245,11 +244,11 @@ public class AdminSkillTests
         Assert.True(report.Escalated);
         Assert.Equal(2, report.Findings.Count);
         Assert.Equal([AdminCheck.Processes, AdminCheck.Ports], report.Did);
-        Assert.Equal(20 + 25 * 3, report.Suspicion);         // 老手的倍数是 2 + 1
+        Assert.Equal(20 + 25 * 3, report.Suspicion);         // 资深运维的倍数是 2 + 1
     }
 
     [Fact]
-    public void 新手与熟手不会当场全查()
+    public void 实习运维与运维不会当场全查()
     {
         foreach (var skill in new[] { AdminSkill.Junior, AdminSkill.Regular })
         {
@@ -260,7 +259,7 @@ public class AdminSkillTests
     }
 
     [Fact]
-    public void 改口令_要有目标账号也要有_root_口令()
+    public void 改口令_要有目标账号()
     {
         var eager = new Dictionary<AdminSkill, AdminProfile>
         {
@@ -271,15 +270,13 @@ public class AdminSkillTests
         Assert.True(NewAgent(AdminSkill.Senior, Definition with { Tiers = eager }).ShouldChangePasswords(quiet));
         Assert.False(NewAgent(AdminSkill.Senior, Definition with { Tiers = eager, PasswordTargets = [] })
             .ShouldChangePasswords(quiet));
-        Assert.False(NewAgent(AdminSkill.Senior, Definition with { Tiers = eager },
-                              account: new AdminAccount("opsadm", "pw")).ShouldChangePasswords(quiet));
-        // 新手和熟手默认不改
+        // 实习运维和运维默认不改
         Assert.False(NewAgent(AdminSkill.Junior).ShouldChangePasswords(quiet with { Findings = [Stray("x")] }));
         Assert.False(NewAgent(AdminSkill.Regular).ShouldChangePasswords(quiet with { Findings = [Stray("x")] }));
     }
 
     [Fact]
-    public void 老手看出东西之后改口令的可能大得多()
+    public void 资深运维看出东西之后改口令的可能大得多()
     {
         var quiet = new PatrolReport("jump01", false, [], [], 0, false);
         var found = quiet with { Findings = [Stray("x")] };
@@ -293,33 +290,46 @@ public class AdminSkillTests
         Assert.True(alarmed > calm * 5, $"平时 {calm} 次，起疑后 {alarmed} 次");
     }
 
-    // --- 难度 ---------------------------------------------------------------
+    // --- 游玩模式 -----------------------------------------------------------
 
     [Fact]
-    public void 各难度的概率加起来是一()
+    public void 各模式的默认概率加起来是一()
     {
-        foreach (var difficulty in Enum.GetValues<Difficulty>())
-            Assert.Equal(1.0, AdminSkillOdds.For(difficulty).Values.Sum(), 6);
+        foreach (var mode in Enum.GetValues<PlayMode>())
+            Assert.Equal(1.0, AdminSkillOdds.Default(mode).Values.Sum(), 6);
     }
 
     [Fact]
-    public void 难度越高老手越常来()
+    public void 模式越贴近实战资深运维越常来_新手模式碰不到()
     {
-        int Seniors(Difficulty d)
+        int Seniors(PlayMode mode)
         {
             var random = new Random(3);
-            return Enumerable.Range(0, 5000).Count(_ => AdminSkillOdds.Roll(d, null, random) == AdminSkill.Senior);
+            return Enumerable.Range(0, 5000).Count(_ => AdminSkillOdds.Roll(mode, Definition, random) == AdminSkill.Senior);
         }
-        int easy = Seniors(Difficulty.Easy), normal = Seniors(Difficulty.Normal), hard = Seniors(Difficulty.Hard);
-        Assert.True(easy < normal && normal < hard, $"{easy} / {normal} / {hard}");
+        int novice = Seniors(PlayMode.Novice), advanced = Seniors(PlayMode.Advanced), expert = Seniors(PlayMode.Expert);
+        Assert.Equal(0, novice);
+        Assert.True(advanced < expert, $"{advanced} / {expert}");
     }
 
     [Fact]
-    public void 关卡强制档位时无视难度()
+    public void 关卡能按模式改概率_也能强制档位()
     {
+        var definition = Definition with
+        {
+            SkillOdds = new Dictionary<PlayMode, IReadOnlyDictionary<AdminSkill, double>>
+            {
+                [PlayMode.Novice] = new Dictionary<AdminSkill, double> { [AdminSkill.Senior] = 1 },
+            },
+        };
         var random = new Random(3);
+        Assert.Equal(AdminSkill.Senior, AdminSkillOdds.Roll(PlayMode.Novice, definition, random));
+        // 没写的模式照默认
+        Assert.Equal(AdminSkillOdds.Default(PlayMode.Expert), AdminSkillOdds.For(PlayMode.Expert, definition));
+
+        var forced = definition with { Skill = AdminSkill.Junior };
         for (int i = 0; i < 100; i++)
-            Assert.Equal(AdminSkill.Junior, AdminSkillOdds.Roll(Difficulty.Hard, AdminSkill.Junior, random));
+            Assert.Equal(AdminSkill.Junior, AdminSkillOdds.Roll(PlayMode.Expert, forced, random));
     }
 
     // --- 关卡文件 -----------------------------------------------------------
@@ -362,18 +372,37 @@ public class AdminSkillTests
     }
 
     [Fact]
-    public void 强制成老手时_关卡可以不写_routine()
+    public void 强制成资深运维时_关卡可以不写_routine()
     {
-        // 老手自带一套手法；熟手才照关卡的 routine 来
+        // 资深运维自带一套手法；运维才照关卡的 routine 来
         Parse("\"skill\": \"senior\"");
         var ex = Rejects("\"routine\": []");
         Assert.Contains("regular 档的管理员没有例行要做的事", ex.Message);
+
+        // 各模式都抽不到运维的话，也可以不写
+        Parse("""
+            "skillOdds": {
+              "novice":   { "junior": 1 },
+              "advanced": { "junior": 0.5, "senior": 0.5 },
+              "expert":   { "senior": 1 }
+            }
+            """);
+    }
+
+    [Fact]
+    public void 按模式给的概率要加起来是一()
+    {
+        var ex = Rejects("""
+            "skill": "senior",
+            "skillOdds": { "expert": { "junior": 0.5, "senior": 0.2 } }
+            """);
+        Assert.Contains("expert 模式的 skillOdds 加起来是 0.7", ex.Message);
     }
 
     [Fact]
     public void 脚本对不上号被拒绝()
     {
-        // 自己写了 scripts 却没保留新手要跑的那两个
+        // 自己写了 scripts 却没保留实习运维要跑的那两个
         var ex = Rejects("""
             "scripts": [ { "name": "check.sh", "checks": ["services"] } ],
             "routine": [ { "id": "s", "check": "sessions" } ]

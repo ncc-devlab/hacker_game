@@ -97,6 +97,41 @@ public sealed partial class TtySession : IDisposable
         return StripEcho(text, command);
     }
 
+    /// <summary>
+    /// 敲一条会问话的命令（<c>sudo</c>、<c>passwd</c>），碰到哪个提示就答哪句，直到回到 shell 提示符。
+    /// 返回整段输出（不含回显的命令本身和结尾的提示符）。
+    /// </summary>
+    /// <remarks>
+    /// <para>答的内容是在提示之后敲进去的，不在命令行上：不进命令历史，也不会出现在
+    /// 玩家的 <c>ps</c> 里。这正是真人改口令的样子。</para>
+    /// <para>提示要以 <c>$</c> 结尾来写（锚在缓冲区末尾）。每个提示可以出现任意次，
+    /// 也可以不出现 —— 比如 <c>sudo</c> 刚验过口令，这次就不问了。</para>
+    /// </remarks>
+    public async Task<string> RunInteractiveAsync(string command, IReadOnlyList<(Regex Prompt, string Answer)> answers,
+                                                  TimeSpan timeout, CancellationToken cancellationToken = default)
+    {
+        if (User is null) throw new InvalidOperationException("还没登录");
+
+        using var cts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        cts.CancelAfter(timeout);
+
+        var anything = new Regex(string.Join('|', answers.Select(a => $"(?:{a.Prompt})").Append($"(?:{ShellPrompt})")));
+        var transcript = new StringBuilder();
+        lock (_gate) _buffer.Clear();
+        await SendLineAsync(command, cts.Token).ConfigureAwait(false);
+        while (true)
+        {
+            string text = await ExpectAsync(anything, $"命令 \"{command}\" 的提示", cts.Token).ConfigureAwait(false);
+            // 提示后面在等我们敲字，不会再有别的输出进来，这时清缓冲不会丢东西
+            lock (_gate) _buffer.Clear();
+            transcript.Append(text);
+            int asked = answers.ToList().FindIndex(a => a.Prompt.IsMatch(text));
+            if (asked < 0) break;
+            await SendLineAsync(answers[asked].Answer, cts.Token).ConfigureAwait(false);
+        }
+        return StripEcho(transcript.ToString(), command);
+    }
+
     /// <summary>退出登录。管理员查完岗要走，会话留在 wtmp 里。</summary>
     public async Task LogoutAsync(TimeSpan timeout, CancellationToken cancellationToken = default)
     {

@@ -176,7 +176,7 @@ public class AdminTtyIntegrationTests
     };
 
     [SkippableFact]
-    public async Task 新手的运维脚本真的放进了家目录_他只看得见脚本打印的东西()
+    public async Task 实习运维的运维脚本真的放进了家目录_他只看得见脚本打印的东西()
     {
         Skip.IfNot(TestImages.GuestImagesReady, TestImages.MissingImagesReason);
 
@@ -213,6 +213,8 @@ public class AdminTtyIntegrationTests
             string body = await peek.RunAsync("cat ~/bin/daily-check.sh", TtyTimeout, cts.Token);
             Assert.Contains("== services ==", body);
             Assert.Contains("ps -o pid,user,tty,args", body);
+            // 写脚本的那一串 echo 是开局布景，不该出现在他的命令历史里
+            Assert.DoesNotContain(">> daily-check.sh", await peek.RunAsync("cat ~/.ash_history", TtyTimeout, cts.Token));
             await peek.LogoutAsync(TtyTimeout, cts.Token);
         }
 
@@ -220,7 +222,7 @@ public class AdminTtyIntegrationTests
         var clean = await agent.PatrolAsync(cts.Token);
         Assert.False(clean.FoundSomething, string.Join("\n", clean.Findings.Select(f => f.Explanation)));
 
-        // 玩家留了个后台进程：daily 只看服务和会话，新手看不见它
+        // 玩家留了个后台进程：daily 只看服务和会话，实习运维看不见它
         await TypeAsync(vm, "sleep 600 &", cts.Token);
         var missed = await agent.PatrolAsync(cts.Token);
         Assert.False(missed.FoundSomething);
@@ -277,12 +279,12 @@ public class AdminTtyIntegrationTests
     }
 
     [SkippableFact]
-    public async Task 老手改掉玩家账号的口令_新口令真的生效()
+    public async Task 资深运维改掉玩家账号的口令_新口令真的生效()
     {
         Skip.IfNot(TestImages.GuestImagesReady, TestImages.MissingImagesReason);
 
         using var cts = new CancellationTokenSource(TimeSpan.FromMinutes(4));
-        var account = new AdminAccount("opsadm", "Zx7-quiet-lane", "Rt4-root-lane");
+        var account = new AdminAccount("opsadm", "Zx7-quiet-lane");
         var (vm, vSwitch, run) = await BootJumpAsync(account, cts);
         await using var _vm = vm;
         await using var _switch = vSwitch;
@@ -320,9 +322,17 @@ public class AdminTtyIntegrationTests
             () => door.LoginAsync("ops", "stolen-pass", TtyTimeout, cts.Token));
         await door.LoginAsync("ops", fresh, TtyTimeout, cts.Token);
         Assert.Contains("ops", await door.RunAsync("id", TtyTimeout, cts.Token));
-        // 他用 root 敲的那条命令（带着新口令）没进 root 的命令历史
-        Assert.DoesNotContain(fresh, await door.RunAsync("cat /root/.ash_history 2>&1", TtyTimeout, cts.Token));
         await door.LogoutAsync(TtyTimeout, cts.Token);
+
+        // 痕迹：他的命令历史里有 sudo passwd ops，但新口令不在里面（是在提示后面敲的）；
+        // sudo 在系统日志里记了一笔。这些玩家都翻得到
+        using var trace = new TtySession(vm.Admin!);
+        await trace.LoginAsync(account.User, account.Password, TtyTimeout, cts.Token);
+        string history = await trace.RunAsync("cat ~/.ash_history", TtyTimeout, cts.Token);
+        Assert.Contains("sudo passwd ops", history);
+        Assert.DoesNotContain(fresh, history);
+        Assert.Contains("passwd ops", await trace.RunAsync("grep sudo /var/log/messages", TtyTimeout, cts.Token));
+        await trace.LogoutAsync(TtyTimeout, cts.Token);
 
         await cts.CancelAsync();
         try { await run; } catch (OperationCanceledException) { }
