@@ -2,7 +2,7 @@
 # Alpine rootfs 的 stage2 init（装到 /sbin/init）。
 # 刻意不跑 openrc：M0 要验证的是终端渲染，不是服务管理，
 # 少一层就少一个变量，而且启动快得多。
-export PATH=/bin:/sbin:/usr/bin:/usr/sbin
+export PATH=/bin:/sbin:/usr/bin:/usr/sbin:/usr/local/bin
 export HOME=/root; mkdir -p /root /tmp /run
 chmod 1777 /tmp
 mountpoint -q /proc || mount -t proc     proc     /proc
@@ -19,6 +19,7 @@ m0_start_admin_tty
 m0_open_access
 m0_start_services
 m0_place_content
+m0_install_tools
 m0_disguise
 m0_banner
 m0_console_loop

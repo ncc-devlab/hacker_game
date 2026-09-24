@@ -260,6 +260,79 @@ RLOGIND
     nc -lk -p "$_port" -e /usr/sbin/rlogind >/dev/null 2>&1 &
 }
 
+# 新手模式的工具箱（m0.tools=1），只装在玩家自己那台机器上。
+#
+# 这是「辅助依赖」那根轴上最实的一档：同一件事，专家模式下玩家自己一条条敲，
+# 新手模式下有个工具替他跑完，并且把每一步做了什么打出来。
+#
+# 三条自我约束：
+#   1. 工具不做玩家做不到的事。mktunnel 敲的每一条命令，玩家自己都敲得出来。
+#   2. 工具是 shell 脚本，玩家 cat 得出来。看懂了它，下次就不需要它 ——
+#      这比把手法藏进一个二进制里有用得多。
+#   3. 工具留下的痕迹和手敲一模一样：一样的登录记录、一样的 sudo 日志。
+#      不能出现「用了工具反而更干净」这种事。
+m0_install_tools() {
+    [ "$(m0_cmdline_get m0.tools)" = "1" ] || return 0
+    mkdir -p /usr/local/bin
+
+    cat > /usr/local/bin/tools <<'TOOLS'
+#!/bin/sh
+echo "新手模式：这台机器上装了这几个工具"
+echo
+echo "  mktunnel   经跳板机把某个网段接过来（登录、查 sudo、开转发、加路由）"
+echo
+echo "每个都是 shell 脚本，cat 出来就能看见它到底敲了哪几条命令。"
+echo "看懂了就不用它了 —— 那才是这一模式的目的。"
+TOOLS
+
+    cat > /usr/local/bin/mktunnel <<'MKTUNNEL'
+#!/bin/sh
+# 经跳板机把某个网段接过来。手敲的话就是下面这三件事：
+#   1. 从维护口登录跳板机
+#   2. 在那边 sudo 打开 ip_forward
+#   3. 回自己机器上加一条路由，让那个网段走跳板机
+usage() {
+    echo "用法: mktunnel <跳板机> <口> <账号> <口令> <网段>"
+    echo "例:   mktunnel 10.0.0.2 2222 svc-backup hunter2 172.16.5.0/24"
+    echo
+    echo "注意: 口令写在命令行上，ps 和命令历史里都留得下来。"
+    echo "      真要干净的话，这一步得自己想办法。"
+}
+[ $# -eq 5 ] || { usage; exit 1; }
+host=$1; port=$2; user=$3; pass=$4; net=$5
+
+echo "[1/3] 登录 $user@$host:$port，看看能不能 sudo"
+out=$(printf '%s\n%s\nsudo -n true && echo HAVE-SUDO\nsudo sh -c "echo 1 > /proc/sys/net/ipv4/ip_forward"\necho FWD-$(cat /proc/sys/net/ipv4/ip_forward)\nexit\n' \
+      "$user" "$pass" | nc "$host" "$port" 2>&1)
+
+case "$out" in
+    *"Login incorrect"*) echo "      账号或口令不对，没进去"; exit 1 ;;
+esac
+case "$out" in
+    *HAVE-SUDO*) echo "      进去了，而且这个账号能 sudo" ;;
+    *)           echo "      进去了，但这个账号不能 sudo —— 开不了转发"; exit 1 ;;
+esac
+
+echo "[2/3] 在 $host 上打开 ip_forward"
+case "$out" in
+    *FWD-1*) echo "      开了。走的时候记得关回去：它关不掉就带不走" ;;
+    *)       echo "      没开成。它说的是:"; echo "$out" | sed 's/^/      | /'; exit 1 ;;
+esac
+
+echo "[3/3] 本机加一条路由：$net 走 $host"
+ip route del "$net" 2>/dev/null
+if ip route add "$net" via "$host"; then
+    ip route | grep -- "$net" | sed 's/^/      /'
+    echo
+    echo "通了。接下来 $net 里的地址你直接连就行。"
+else
+    echo "      加路由失败"; exit 1
+fi
+MKTUNNEL
+
+    chmod 0755 /usr/local/bin/tools /usr/local/bin/mktunnel
+}
+
 # tmux / script / 任何要开子终端的程序都需要 pty。
 # devtmpfs 不会自动建 /dev/pts 目录，不先 mkdir 的话 mount 会失败，
 # 症状是 tmux 报 "create window failed: fork failed: No such file or directory"。

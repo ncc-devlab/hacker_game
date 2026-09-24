@@ -9,7 +9,7 @@ $BB mount -t proc     proc     /proc
 $BB mount -t sysfs    sysfs    /sys
 $BB mount -t devtmpfs devtmpfs /dev 2>/dev/null
 $BB --install -s /bin
-export PATH=/bin:/sbin:/usr/bin:/usr/sbin
+export PATH=/bin:/sbin:/usr/bin:/usr/sbin:/usr/local/bin
 export HOME=/root; mkdir -p /root
 
 for m in virtio_pci virtio_net virtio_blk e1000 e1000e sd_mod ext4; do modprobe $m 2>/dev/null; done
@@ -38,6 +38,7 @@ m0_start_admin_tty
 m0_open_access
 m0_start_services
 m0_place_content
+m0_install_tools
 m0_disguise
 m0_banner
 m0_console_loop

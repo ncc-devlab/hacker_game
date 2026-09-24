@@ -57,6 +57,15 @@ public sealed record VmSpec
     /// 远程维护口。给了就在这个端口上开一个真的登录服务，玩家从别的机器连过来登录。
     /// </summary>
     public GuestAccess? Access { get; init; }
+
+    /// <summary>
+    /// 往这台机器上装新手模式的工具箱（<c>tools</c>、<c>mktunnel</c>）。
+    /// </summary>
+    /// <remarks>
+    /// 只给玩家自己的机器装，而且只在新手模式下。工具是 shell 脚本，玩家
+    /// <c>cat</c> 得出来 —— 看懂了它敲的那几条命令，下次就不需要它了。
+    /// </remarks>
+    public bool Tools { get; init; }
 }
 
 /// <summary>
@@ -198,6 +207,7 @@ public sealed class QemuLauncher : IAsyncDisposable, IDisposable
         // 远程维护口：端口:账号:口令:能不能 sudo。口令和管理员的一样不落进关卡文件
         string accessArg = spec.Access is not { } access ? ""
             : $" m0.access={access.Port}:{access.User}:{access.Password}:{(access.Sudo ? 1 : 0)}";
+        string toolsArg = spec.Tools ? " m0.tools=1" : "";
         if (spec.Access?.Password.Contains(':') is true)
             throw new ArgumentException("维护口的口令不能带冒号，cmdline 上这几段是用冒号分的", nameof(spec));
 
@@ -211,7 +221,7 @@ public sealed class QemuLauncher : IAsyncDisposable, IDisposable
             "-initrd", spec.InitrdPath,
             "-append", $"console=ttyS0 quiet loglevel=3 tsc=unstable "
                        + $"m0.host={spec.Name}{ipArg}{gatewayArg}{rootArg}{personaArg}{adminArg}"
-                       + $"{fileArg}{serviceArg}{accessArg}",
+                       + $"{fileArg}{serviceArg}{accessArg}{toolsArg}",
             "-chardev", chardev("con", consolePort), "-serial", "chardev:con",
             "-chardev", chardev("ctl", controlPort), "-serial", "chardev:ctl",
             "-qmp", $"tcp:127.0.0.1:{qmpPort},server=on,wait=off",

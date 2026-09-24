@@ -84,6 +84,26 @@ public class AdminSkillTests
         Assert.Contains(AdminCheck.Forwarding, ChecksOf(skill, definition));
     }
 
+    [Theory]
+    [InlineData(AdminSkill.Junior)]
+    [InlineData(AdminSkill.Regular)]
+    [InlineData(AdminSkill.Senior)]
+    public void 每一档管理员的家目录里都摆着同样那几个运维脚本(AdminSkill skill)
+    {
+        // 脚本是「这台机器上他的东西」，跟他会不会跑它没关系：只有实习运维靠脚本干活，
+        // 可另外两档的家目录里也该有 —— 玩家打进机器翻他的家目录，看到的是运维每天看什么，
+        // 那是侦察材料。档位换了就翻不到东西的话，这条线索时有时无
+        var scripts = Definition.EffectiveScripts;
+        Assert.Equal(["daily-check.sh", "full-check.sh"], scripts.Select(x => x.Name));
+
+        // 放脚本这件事本来就不看档位，写下来盯着它别哪天被改成只给实习运维
+        var commands = new AdminInspectors(Allow, "jump01", "opsadm", scripts).ProvisionCommands();
+        Assert.Contains(commands, c => c == "mkdir -p ~/bin");
+        foreach (var script in scripts)
+            Assert.Contains(commands, c => c.Contains(script.Name));
+        _ = skill;
+    }
+
     private static AdminInspectors NewInspectors() => new(Allow, "jump01", "opsadm");
 
     private static (AdminFinding, int)[] Seen(int weight, params AdminFinding[] findings) =>

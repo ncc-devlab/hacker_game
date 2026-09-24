@@ -238,6 +238,44 @@ public class AdminTtyIntegrationTests
     }
 
     [SkippableFact]
+    public async Task 运维脚本落在他自己的家目录里_玩家进去就读得到()
+    {
+        Skip.IfNot(TestImages.GuestImagesReady, TestImages.MissingImagesReason);
+
+        using var cts = new CancellationTokenSource(TimeSpan.FromMinutes(4));
+        var account = new AdminAccount("opsadm", "Zx7-quiet-lane");
+        var (vm, vSwitch, run) = await BootJumpAsync(account, cts);
+        await using var _vm = vm;
+        await using var _switch = vSwitch;
+
+        var definition = new AdminDefinition { Machine = "jump01", User = account.User, Allow = JumpAllow };
+        using var tty = new TtySession(vm.Admin!);
+        // 哪一档都一样：脚本是这台机器上「他的东西」，跟他会不会跑它没关系
+        await new AdminAgent(definition, account, tty, seed: 1, skill: AdminSkill.Senior)
+            .ProvisionAsync(cts.Token);
+
+        using var peek = new TtySession(vm.Admin!);
+        await peek.LoginAsync(account.User, account.Password, TtyTimeout, cts.Token);
+
+        // 家目录是真的：登录进去人就在那儿，不是被扔在 /
+        Assert.Contains("/home/opsadm", await peek.RunAsync("pwd", TtyTimeout, cts.Token));
+
+        string listing = await peek.RunAsync("ls -l /home/opsadm/bin", TtyTimeout, cts.Token);
+        Assert.Contains("daily-check.sh", listing);
+        Assert.Contains("full-check.sh", listing);
+
+        // 归他自己，而且别人读得到 —— 玩家打进这台机器之后翻他的家目录，
+        // 就知道运维每天看哪几样。这是侦察材料，不是摆设
+        Assert.Contains("opsadm", listing);
+        Assert.Matches("-rwxr.xr.x", listing);
+
+        await peek.LogoutAsync(TtyTimeout, cts.Token);
+
+        await cts.CancelAsync();
+        try { await run; } catch (OperationCanceledException) { }
+    }
+
+    [SkippableFact]
     public async Task 查端口_玩家开的监听藏不住()
     {
         Skip.IfNot(TestImages.GuestImagesReady, TestImages.MissingImagesReason);

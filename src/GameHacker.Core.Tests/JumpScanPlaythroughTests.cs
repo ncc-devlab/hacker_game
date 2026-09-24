@@ -48,12 +48,9 @@ public class JumpScanPlaythroughTests
         var account = new AdminAccount(level.Admin!.User, "Zx7-quiet-lane");
         var vms = new List<QemuLauncher>();
         var controls = new Dictionary<string, ControlChannel>();
-        var consoles = new Dictionary<string, StringBuilder>();
+        var consoles = new Dictionary<string, ConsoleText>();
 
-        string Console(string machine)
-        {
-            lock (consoles[machine]) return consoles[machine].ToString();
-        }
+        string Console(string machine) => consoles[machine].ToString();
 
         // 最近一次问回来的进程表。这一关里「玩家进去了没有」全靠它判定，
         // 红了以后不看一眼进程表就只知道「第一步没过」
@@ -88,9 +85,9 @@ public class JumpScanPlaythroughTests
                 });
                 // 留一份控制台输出：这个测试一旦红了，没有它就只知道「第几步没过」，
                 // 不知道客户机上那条命令到底说了什么
-                var text = new StringBuilder();
+                var text = new ConsoleText();
                 consoles[m.Name] = text;
-                vm.Console!.DataReceived += d => { lock (text) text.Append(Encoding.UTF8.GetString(d.Span)); };
+                vm.Console!.DataReceived += d => text.Append(d.Span);
                 _ = vm.Console!.RunAsync(cts.Token);
                 _ = vm.Control!.RunAsync(cts.Token);
                 if (vm.Admin is not null) _ = vm.Admin.RunAsync(cts.Token);

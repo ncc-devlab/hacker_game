@@ -25,7 +25,8 @@ public partial class Level : Control
     private Label _status = null!;
     private Label _levelTitle = null!;
     private Button _back = null!;
-    private HBoxContainer _machinesBox = null!;
+    private Desktop _desktop = null!;
+    private HBoxContainer _windowBar = null!;
     private VBoxContainer _stepsBox = null!;
     private Label _hint = null!;
     private PacketPanel _packets = null!;
@@ -41,6 +42,12 @@ public partial class Level : Control
 
     // --- 管理员 ---
     private PanelContainer _adminPanel = null!;
+    private PanelContainer _objectives = null!;
+    /// <summary>看不见的那几台机器的终端挂在这儿：不显示，但还在场景树里收数据。</summary>
+    private Control _hidden = null!;
+    private GameWindow? _adminWindow;
+    /// <summary>界面上显不显示管理员的动向。高手模式（visibility: hidden）下什么都不说。</summary>
+    private bool _adminShown = true;
     private Label _adminStatus = null!;
     private ProgressBar _threat = null!;
     private VBoxContainer _findings = null!;
@@ -62,11 +69,14 @@ public partial class Level : Control
         _status = GetNode<Label>("%Status");
         _levelTitle = GetNode<Label>("%LevelTitle");
         _back = GetNode<Button>("%Back");
-        _machinesBox = GetNode<HBoxContainer>("%Machines");
+        _desktop = GetNode<Desktop>("%Desktop");
+        _windowBar = GetNode<HBoxContainer>("%WindowBar");
         _stepsBox = GetNode<VBoxContainer>("%Steps");
         _hint = GetNode<Label>("%Hint");
         _packets = GetNode<PacketPanel>("%Packets");
         _adminPanel = GetNode<PanelContainer>("%Admin");
+        _objectives = GetNode<PanelContainer>("%Objectives");
+        _hidden = GetNode<Control>("%Desktop/Parts");
         _adminStatus = GetNode<Label>("%Status2");
         _threat = GetNode<ProgressBar>("%Threat");
         _findings = GetNode<VBoxContainer>("%Findings");
@@ -98,7 +108,7 @@ public partial class Level : Control
             GD.Print($"[level] 管理员 {adminDefinition.User}：{SkillName(_adminSkill)}（{GameState.Instance.Mode} 模式）");
             // 高手模式（visibility: hidden）下界面上什么都不说，
             // 玩家只能自己从机器上看出他来过
-            _adminPanel.Visible = adminDefinition.Visibility == AdminVisibility.Shown;
+            _adminShown = adminDefinition.Visibility == AdminVisibility.Shown;
             _threat.MaxValue = adminDefinition.Suspicion.ExposedAt;
         }
 
@@ -111,7 +121,7 @@ public partial class Level : Control
         // 所以网络上有动静也算一次「该去看看了」
         _packetLog.PacketCaptured += _ => NudgeProbe();
 
-        BuildMachinePanes();
+        BuildWindows();
         ShowSteps();
 
         if (!GamePaths.ImagesReady)
@@ -125,17 +135,19 @@ public partial class Level : Control
     }
 
     /// <summary>
-    /// 玩家面前摆着的终端。
+    /// 桌面上摆哪几扇窗。
     /// </summary>
     /// <remarks>
-    /// <para><b>默认只有玩家自己那台机器</b>（第一台）。别人的机器要么写了
+    /// <para><b>终端只摆玩家自己那台机器的</b>（第一台）。别人的机器要么写了
     /// <see cref="MachineDefinition.Shell"/>（教学关白送 shell 是为了讲机制），
     /// 要么玩家得自己从网络上进去。以前每台机器都摆一个终端，那只是调试时方便 ——
     /// 白送的 shell 会把「打进跳板机」这件事整个跳过去。</para>
-    /// <para>看不见的机器照样建终端节点，只是那一栏不显示：串口、桥接、resize
+    /// <para>看不见的机器照样建终端节点，只是不放进任何一扇窗：串口、桥接、resize
     /// 全都照常工作，自检和截图也还能往它的控制台里敲字。</para>
+    /// <para>窗口的默认位置要等桌面真的有了尺寸才算得出来，所以挂在
+    /// <see cref="Control.Resized"/> 上，摆一次就撤。</para>
     /// </remarks>
-    private void BuildMachinePanes()
+    private void BuildWindows()
     {
         // 调试用：把所有机器的终端都摆出来，不必改关卡文件
         bool all = System.Environment.GetEnvironmentVariable("GAMEHACKER_ALL_SHELLS") is "1" or "true";
@@ -143,22 +155,94 @@ public partial class Level : Control
         for (int i = 0; i < _level.Machines.Count; i++)
         {
             var m = _level.Machines[i];
-            var pane = new VBoxContainer { SizeFlagsHorizontal = SizeFlags.ExpandFill };
-            pane.Visible = all || i == 0 || m.Shell;
-            string product = HardwarePersona.ByName(m.Persona)?.SystemProduct ?? "";
-            string ips = string.Join(" / ", m.Nics.Select(n => n.Ip));
-            pane.AddChild(new Label { Text = $"{m.Name} — {ips}   {product}" });
-
             // Terminal 是 godot-xterm 的 GDExtension 类，C# 里没有对应类型，只能按类名实例化
             var terminal = ClassDB.Instantiate("Terminal").As<Control>();
             terminal.Name = $"Terminal_{m.Name}";
-            terminal.SizeFlagsVertical = SizeFlags.ExpandFill;
-            pane.AddChild(terminal);
-
-            _machinesBox.AddChild(pane);
             _terminals.Add(terminal);
+
+            if (!(all || i == 0 || m.Shell))
+            {
+                // 玩家看不见它，但它得在场景树里才收得到数据
+                terminal.Visible = false;
+                _hidden.AddChild(terminal);
+                continue;
+            }
+
+            string product = HardwarePersona.ByName(m.Persona)?.SystemProduct ?? "";
+            string ips = string.Join(" / ", m.Nics.Select(n => n.Ip));
+            var window = _desktop.Open($"{m.Name} — {ips}   {product}", terminal, closable: i != 0);
+            // 点进终端就把它那扇窗提到最前，不然会被别的窗压着还在接收键盘
+            terminal.FocusEntered += () => _desktop.BringToFront(window);
+            AddWindowToggle(window, m.Name);
         }
+
+        AddWindowToggle(_desktop.Open("任务目标", _objectives), "任务");
+        var admin = _desktop.Open("管理员", _adminPanel);
+        _adminWindow = admin;
+        // 高手模式下这扇窗根本不出现：玩家只能自己从机器上看出他来过
+        admin.Visible = _adminShown;
+        AddWindowToggle(admin, "管理员");
+        AddWindowToggle(_desktop.Open("抓包", _packets), "抓包");
+
+        _desktop.Resized += LayoutOnce;
+        LayoutOnce();
     }
+
+    /// <summary>顶栏上那排开关：窗关掉之后还找得回来。</summary>
+    private void AddWindowToggle(GameWindow window, string label)
+    {
+        var button = new Button { Text = label, ToggleMode = true, ButtonPressed = true, FocusMode = Control.FocusModeEnum.None };
+        button.Toggled += on =>
+        {
+            if (on) window.Reopen();
+            else window.Close();
+        };
+        window.Closed += _ => button.SetPressedNoSignal(false);
+        _windowBar.AddChild(button);
+    }
+
+    private bool _laidOut;
+
+    /// <summary>
+    /// 默认布局：终端占左边一大块，任务目标和管理员在右边一列，抓包贴在下面。
+    /// </summary>
+    /// <remarks>
+    /// 和改成窗口之前的固定分栏是同一个样子 —— 玩家第一眼看到的东西没变，
+    /// 只是现在每一块都能拖走。摆过一次就不再管，之后是玩家自己的布局。
+    /// </remarks>
+    private void LayoutOnce()
+    {
+        if (_laidOut) return;
+
+        // 桌面还没排过版时 Size 是 0（无头模式下 Resized 可能一次都不响）。
+        // 不能就这么放过：窗口留在 0 尺寸，里面的终端就只有一列宽，
+        // 玩家看到的是一条缝，自检读出来的屏幕内容只剩一个字符。实测踩到过
+        var area = _desktop.Size;
+        if (area.X < 1 || area.Y < 1) area = GetViewportRect().Size;
+        if (area.X < 1 || area.Y < 1) return;
+        _laidOut = true;
+
+        float width = area.X, height = area.Y;
+        float rightWidth = Mathf.Clamp(width * 0.24f, 260, 360);
+        float packetHeight = Mathf.Clamp(height * 0.28f, 160, 260);
+        float left = width - rightWidth;
+
+        var terminals = _desktop.Windows.Where(w => w.Name.ToString().StartsWith("Window_")
+                                                    && !IsPanelWindow(w)).ToList();
+        float each = terminals.Count == 0 ? 0 : (height - packetHeight) / terminals.Count;
+        for (int i = 0; i < terminals.Count; i++)
+            terminals[i].PlaceAt(new Rect2(0, i * each, left, each));
+
+        _desktop.Windows.First(w => w.Title == "抓包")
+                .PlaceAt(new Rect2(0, height - packetHeight, left, packetHeight));
+        _desktop.Windows.First(w => w.Title == "任务目标")
+                .PlaceAt(new Rect2(left, 0, rightWidth, height * 0.6f));
+        _desktop.Windows.First(w => w.Title == "管理员")
+                .PlaceAt(new Rect2(left, height * 0.6f, rightWidth, height * 0.4f));
+    }
+
+    private static bool IsPanelWindow(GameWindow window) =>
+        window.Title is "抓包" or "任务目标" or "管理员";
 
     private async Task BootAsync()
     {
@@ -195,7 +279,9 @@ public partial class Level : Control
             // 玩家在任何一台机器上敲了回车，就去看一眼这一步要看的状态
             foreach (var session in _sessions) session.Bridge.PlayerSubmitted += NudgeProbe;
 
-            SetStatus($"{_sessions.Count} 台机器就绪");
+            SetStatus(GameState.Instance.Mode == PlayMode.Novice
+                ? $"{_sessions.Count} 台机器就绪。新手模式：你的机器上装了几个工具，敲 tools 看看"
+                : $"{_sessions.Count} 台机器就绪");
             _terminals[0].GrabFocus();
             StartAdmin();
 
@@ -233,6 +319,9 @@ public partial class Level : Control
             Files = m.Files.Select(f => new GuestFile(f.Path, f.Text)).ToList(),
             Services = m.Services.Select(x => new GuestService(x.Port, x.File)).ToList(),
             Access = _access.GetValueOrDefault(m.Name),
+            // 新手模式给玩家自己的机器装一套工具。它们不做玩家做不到的事，
+            // 只是把那几条命令替他跑一遍并打出来 —— 而且都是 cat 得出来的脚本
+            Tools = index == 0 && GameState.Instance.Mode == PlayMode.Novice,
             // 关卡里不写回镜像，保持基础镜像干净。
             // 真正的存档走 qcow2 backing file + user:// 下的 overlay。
             Ephemeral = m.Disk is not null,
@@ -452,8 +541,9 @@ public partial class Level : Control
         if (_admin is null || !IsInstanceValid(_adminStatus)) return;
 
         // 阶段可能把他改成隐身（高手模式），也可能反过来
-        _adminPanel.Visible = _admin.Visibility == AdminVisibility.Shown;
-        if (!_adminPanel.Visible) return;
+        _adminShown = _admin.Visibility == AdminVisibility.Shown;
+        if (_adminWindow is { } window && window.Visible != _adminShown) window.Visible = _adminShown;
+        if (!_adminShown) return;
 
         string machine = _admin.Machine;
         string who = $"{_adminAccount!.User}（{SkillName(_admin.Skill)}）";
@@ -502,6 +592,8 @@ public partial class Level : Control
 
     public override void _Process(double delta)
     {
+        // 桌面拿到尺寸的那一刻不一定有 Resized 信号，所以这里补一次；摆好就不再进来
+        if (!_laidOut) LayoutOnce();
         if (_admin is not null && _admin.Activity == AdminActivity.Away) ShowAdmin();
     }
 
@@ -614,8 +706,16 @@ public partial class Level : Control
             System.Environment.GetEnvironmentVariable("GAMEHACKER_SCREENSHOT_DELAY"), out double d) ? d : 4;
         await Task.Delay(TimeSpan.FromSeconds(extra));
 
-        // 截图必须在主线程、且要等当前帧画完
-        await ToSignal(RenderingServer.Singleton, RenderingServerInstance.SignalName.FramePostDraw);
+        // 截图要在主线程、而且画面得是新的。
+        //
+        // 不能等 frame_post_draw：屏幕锁了、窗口被挡住、或者跑在没有合成器的环境里时，
+        // 引擎根本不画，那个信号就永远不来 —— 进程挂死在这一行，CI 只看得到超时。
+        // 实测踩到过：_Process 照跑两万帧，frame_post_draw 一次没响，那台机器的
+        // 会话是 LockedHint=yes。
+        // 所以改成自己逼它画一帧：先等一个逻辑帧让界面状态落定，再 ForceDraw。
+        // 注意锁屏时截出来的画面可能是半旧的（动态控件没重绘），要看真东西得先解锁。
+        await ToSignal(GetTree(), SceneTree.SignalName.ProcessFrame);
+        RenderingServer.ForceDraw();
         var image = GetViewport().GetTexture().GetImage();
         Error err = image.SavePng(path);
         GD.Print(err == Error.Ok ? $"[level] 截图已存 {path}" : $"[level] 截图失败: {err}");
