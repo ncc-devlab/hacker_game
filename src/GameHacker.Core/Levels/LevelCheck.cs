@@ -1,5 +1,6 @@
 using System.Net;
 using System.Text.Json.Serialization;
+using System.Text.RegularExpressions;
 using GameHacker.Core.Admin;
 using GameHacker.Core.Net;
 
@@ -141,6 +142,7 @@ public abstract class CheckTracker
 [JsonDerivedType(typeof(RouteCheck), "route")]
 [JsonDerivedType(typeof(ScanCheck), "scan")]
 [JsonDerivedType(typeof(FileCheck), "file")]
+[JsonDerivedType(typeof(ProcessCheck), "process")]
 [JsonDerivedType(typeof(CleanCheck), "clean")]
 [JsonDerivedType(typeof(PatrolCheck), "patrol")]
 [JsonDerivedType(typeof(AllCheck), "all")]
@@ -344,6 +346,67 @@ public sealed record FileCheck : LevelCheck
             state.Machine == check.Machine && state.FileSha == check.Sha256 && state.FileFound;
 
         public override string Remaining => $"{check.Machine} 上还没有那份文件";
+    }
+}
+
+/// <summary>
+/// <c>Machine</c> 的进程表里有这样一个进程 —— 有人在那台机器上。
+/// </summary>
+/// <remarks>
+/// <para><b><see cref="CleanCheck"/> 的正面。</b> 「清干净了」问的是「白名单外什么都没剩」，
+/// 这一个问的是「确实有这么一个东西在跑」。玩家远程登录进了跳板机、在目标机上留了个后门、
+/// 某个服务确实被他起起来了 —— 都是它。</para>
+/// <para><b>为什么用进程表认「玩家进去了」</b>：远程登录进去以后，那台机器上真的多了一个属于
+/// 那个账号的 shell。这是玩家做到了那件事的结果，不是「他敲了什么命令」 ——
+/// 走哪条路进去的、用不用得着我们预设的那个维护口，判定都不关心。</para>
+/// <para><c>User</c> 和 <c>Command</c> 都写的话要同时满足。<c>Command</c> 可以带 <c>*</c>。</para>
+/// </remarks>
+public sealed record ProcessCheck : LevelCheck
+{
+    public required string Machine { get; init; }
+
+    /// <summary>进程属于这个账号。不写就不限。</summary>
+    public string? User { get; init; }
+
+    /// <summary>整条命令要长这样，可以带 <c>*</c>。不写就不限。</summary>
+    public string? Command { get; init; }
+
+    /// <summary>要同时有这么多条。默认一条。</summary>
+    public int Times { get; init; } = 1;
+
+    public override IEnumerable<string> MachineRefs => [Machine];
+
+    public override CheckTracker CreateTracker(LevelWorld world) => new Tracker(this);
+
+    private sealed class Tracker(ProcessCheck check) : CheckTracker
+    {
+        private readonly Regex? _command = check.Command is null ? null
+            : new Regex("^" + Regex.Escape(check.Command).Replace("\\*", ".*") + "$");
+        private string _remaining = "";
+
+        public override IReadOnlyList<StateQuery> Wanted => [new(check.Machine) { Processes = true }];
+
+        public override bool Observe(StateSnapshot state)
+        {
+            if (state.Machine != check.Machine || state.Processes is null) return false;
+
+            int found = state.Processes.Count(p =>
+                (check.User is null || p.IsUser(check.User))
+                && (_command is null || _command.IsMatch(p.Command)));
+            _remaining = found >= check.Times ? ""
+                : $"{check.Machine} 上还没有{Describe()}（找到 {found}/{check.Times}）";
+            return found >= check.Times;
+        }
+
+        private string Describe() => (check.User, check.Command) switch
+        {
+            (null, null) => "任何进程",
+            ({ } u, null) => $"属于 {u} 的进程",
+            (null, { } c) => $"这样的进程：{c}",
+            var (u, c) => $"属于 {u} 的这样的进程：{c}",
+        };
+
+        public override string Remaining => _remaining;
     }
 }
 

@@ -200,6 +200,66 @@ m0_start_admin_tty() {
       done ) &
 }
 
+# 远程维护口（m0.access=端口:账号:口令:能不能sudo）。
+#
+# 这是玩家进这台机器的那条路。界面上只摆玩家自己那台机器的终端，别人的机器
+# 一律得从网络上进来 —— 跳板机是打进去的，不是白送的。
+#
+# 整条路都是真的：真的监听端口、真的账号、真的比对 /etc/shadow 里的哈希。
+# 于是玩家在 netstat 里扫得到它，在 ps 里看得见自己的会话，管理员也看得见；
+# 口令敲错了会进系统日志。没有一处是游戏逻辑假装出来的。
+#
+# 没有 pty：nc 把裸套接字接到脚本的 stdin/stdout 上，这就是老式维护口的样子。
+# 提示符得靠 sh -i 自己打，而且必须 +m 关掉作业控制 —— 没有终端时开着作业控制，
+# shell 起来就是哑的（实测：连上去之后一个字都不回）。
+#
+# 要在 m0_start_services <b>之前</b>跑：chpasswd 会往 syslog 写一句「口令已修改」，
+# 那等于开机就告诉玩家这机器上有个什么账号。
+m0_open_access() {
+    _a="$(m0_cmdline_get m0.access)"
+    [ -n "$_a" ] || return 0
+    _port="${_a%%:*}";   _a="${_a#*:}"
+    _user="${_a%%:*}";   _a="${_a#*:}"
+    _pw="${_a%%:*}";     _sudo="${_a#*:}"
+
+    if ! grep -q "^$_user:" /etc/passwd 2>/dev/null; then
+        mkdir -p "/home/$_user"
+        adduser -D -h "/home/$_user" -s /bin/sh "$_user" >/dev/null 2>&1
+        echo "$_user:$_pw" | chpasswd >/dev/null 2>&1
+        chown -R "$_user" "/home/$_user" 2>/dev/null
+    fi
+
+    # 免口令：裸套接字上没有 tty，真的 sudo 问口令时会报 no tty present。
+    # 提权本身不是这一关要考的东西，留给以后的关卡
+    if [ "$_sudo" = "1" ] && [ -f /usr/bin/sudo ]; then
+        echo "$_user ALL=(ALL:ALL) NOPASSWD: ALL" > "/etc/sudoers.d/$_user"
+        chmod 0440 "/etc/sudoers.d/$_user"
+    fi
+
+    # 登录脚本本身摆在机器上，玩家进来之后读得到它 —— 这机器怎么认人是可侦察的
+    cat > /usr/sbin/rlogind <<'RLOGIND'
+#!/bin/sh
+# 远程维护口。stderr 也接到套接字上，否则 shell 的提示符（ash 打在 stderr 上）出不去。
+exec 2>&1
+echo "$(hostname) maintenance port"
+printf 'login: ';    read -r u
+printf 'Password: '; read -r p
+h=$(grep "^$u:" /etc/shadow 2>/dev/null | cut -d: -f2)
+# 这个 initramfs 里没有 /etc/shadow，chpasswd 把哈希写回了 /etc/passwd
+case "$h" in '$'*) ;; *) h=$(grep "^$u:" /etc/passwd 2>/dev/null | cut -d: -f2);; esac
+salt=$(echo "$h" | cut -d'$' -f1-3)
+if [ -z "$h" ] || [ "$(cryptpw -m sha512 -S "${salt#\$6\$}" "$p")" != "$h" ]; then
+    logger -t rlogind "FAILED LOGIN for $u"
+    echo 'Login incorrect'
+    exit 1
+fi
+logger -t rlogind "login for $u"
+exec su -s /bin/sh -l "$u" -c 'exec sh +m -i'
+RLOGIND
+    chmod 0755 /usr/sbin/rlogind
+    nc -lk -p "$_port" -e /usr/sbin/rlogind >/dev/null 2>&1 &
+}
+
 # tmux / script / 任何要开子终端的程序都需要 pty。
 # devtmpfs 不会自动建 /dev/pts 目录，不先 mkdir 的话 mount 会失败，
 # 症状是 tmux 报 "create window failed: fork failed: No such file or directory"。

@@ -50,6 +50,9 @@ public partial class Level : Control
     private AdminSkill _adminSkill;
     private readonly System.Threading.CancellationTokenSource _adminCts = new();
 
+    /// <summary>玩家手上那几个账号，按机器名。口令这一局现生成。</summary>
+    private readonly Dictionary<string, GuestAccess> _access = [];
+
     // --- 客户机状态探查 ---
     private int _probing;        // 同一时刻只许有一次探查在飞
     private int _probeAgain;     // 飞行期间又来了触发
@@ -78,6 +81,12 @@ public partial class Level : Control
         }
         _level = level;
         _levelTitle.Text = level.Title;
+
+        // 玩家手上的登录方式。口令每局现生成，关卡文件里不留 —— 和管理员的账号同一个规矩，
+        // 玩家翻关卡文件也拿不到。提示里的 {机器名.password} 会换成这一局真的那个
+        foreach (var m in level.Machines)
+            if (m.Access is { } access)
+                _access[m.Name] = new GuestAccess(access.Port, access.User, NewPassword(), access.Sudo);
 
         // 口令每局现生成，关卡文件里不留 —— 玩家翻关卡文件也拿不到管理员的账号
         if (level.Admin is { } adminDefinition)
@@ -115,12 +124,27 @@ public partial class Level : Control
         _ = BootAsync();
     }
 
-    /// <summary>每台机器一栏：标题 + 终端。第一台是玩家的机器，放最左边。</summary>
+    /// <summary>
+    /// 玩家面前摆着的终端。
+    /// </summary>
+    /// <remarks>
+    /// <para><b>默认只有玩家自己那台机器</b>（第一台）。别人的机器要么写了
+    /// <see cref="MachineDefinition.Shell"/>（教学关白送 shell 是为了讲机制），
+    /// 要么玩家得自己从网络上进去。以前每台机器都摆一个终端，那只是调试时方便 ——
+    /// 白送的 shell 会把「打进跳板机」这件事整个跳过去。</para>
+    /// <para>看不见的机器照样建终端节点，只是那一栏不显示：串口、桥接、resize
+    /// 全都照常工作，自检和截图也还能往它的控制台里敲字。</para>
+    /// </remarks>
     private void BuildMachinePanes()
     {
-        foreach (var m in _level.Machines)
+        // 调试用：把所有机器的终端都摆出来，不必改关卡文件
+        bool all = System.Environment.GetEnvironmentVariable("GAMEHACKER_ALL_SHELLS") is "1" or "true";
+
+        for (int i = 0; i < _level.Machines.Count; i++)
         {
+            var m = _level.Machines[i];
             var pane = new VBoxContainer { SizeFlagsHorizontal = SizeFlags.ExpandFill };
+            pane.Visible = all || i == 0 || m.Shell;
             string product = HardwarePersona.ByName(m.Persona)?.SystemProduct ?? "";
             string ips = string.Join(" / ", m.Nics.Select(n => n.Ip));
             pane.AddChild(new Label { Text = $"{m.Name} — {ips}   {product}" });
@@ -208,6 +232,7 @@ public partial class Level : Control
             Gateway = m.Gateway,
             Files = m.Files.Select(f => new GuestFile(f.Path, f.Text)).ToList(),
             Services = m.Services.Select(x => new GuestService(x.Port, x.File)).ToList(),
+            Access = _access.GetValueOrDefault(m.Name),
             // 关卡里不写回镜像，保持基础镜像干净。
             // 真正的存档走 qcow2 backing file + user:// 下的 overlay。
             Ephemeral = m.Disk is not null,
@@ -236,12 +261,31 @@ public partial class Level : Control
             _stepsBox.AddChild(row);
         }
 
-        _hint.Text = _run.CurrentStep switch
+        _hint.Text = Fill(_run.CurrentStep switch
         {
             null => "全部完成。",
             { Check: null } s => $"{s.Hint}\n\n（草稿关：这一步还没写判定，不会自动推进）",
             var s => s.Hint,
-        };
+        });
+    }
+
+    /// <summary>
+    /// 把提示里的占位符换成这一局真的那些值：
+    /// <c>{jump01.user}</c>、<c>{jump01.password}</c>、<c>{jump01.port}</c>、<c>{jump01.ip}</c>。
+    /// </summary>
+    /// <remarks>
+    /// 口令每局都不一样，关卡文件里写不出来；而玩家总得从某处知道自己手上有什么。
+    /// 放在提示里而不是任务简报里 —— 简报在选关界面就要显示，那时这一局还没开始。
+    /// </remarks>
+    private string Fill(string text)
+    {
+        foreach (var (name, access) in _access)
+            text = text.Replace($"{{{name}.user}}", access.User)
+                       .Replace($"{{{name}.password}}", access.Password)
+                       .Replace($"{{{name}.port}}", access.Port.ToString());
+        foreach (var m in _level.Machines)
+            text = text.Replace($"{{{m.Name}.ip}}", m.Nics[0].Ip);
+        return text;
     }
 
     /// <summary>

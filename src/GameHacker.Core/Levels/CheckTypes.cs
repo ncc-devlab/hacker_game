@@ -78,6 +78,11 @@ public static class CheckTypes
             """{ "type": "file", "machine": "ws", "sha256": "fdf59bb6…" }"""),
 
         new(
+            "process", typeof(ProcessCheck), CheckChannel.Guest,
+            "machine 的进程表里有这样一个进程 —— 有人在那台机器上。clean 的正面：远程登录进去了没有、后门还在不在、那个服务确实起来了没有",
+            """{ "type": "process", "machine": "jump01", "user": "svc-backup" }"""),
+
+        new(
             "clean", typeof(CleanCheck), CheckChannel.Guest,
             "machine 上看不出有人来过：白名单外的进程没了，转发也关回去了。白名单和管理员用的是同一份",
             """{ "type": "clean", "machine": "jump01" }"""),

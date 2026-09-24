@@ -31,6 +31,18 @@ public sealed record ProcessLine(int Pid, string User, string Tty, string Comman
         }
     }
 
+    /// <summary>
+    /// 这个进程是不是属于这个账号。
+    /// </summary>
+    /// <remarks>
+    /// busybox 的 <c>ps</c> 把 USER 列截到 8 个字符：<c>svc-backup</c> 在输出里是
+    /// <c>svc-back</c>。直接比字符串的话，名字长过 8 个字符的账号<b>永远</b>对不上 ——
+    /// 关卡里写了这么一个名字，判定就永远不亮，而输出看上去完全正常。实测踩到过。
+    /// </remarks>
+    public bool IsUser(string user) =>
+        User == user
+        || (User.Length == 8 && user.Length > 8 && user.StartsWith(User, StringComparison.Ordinal));
+
     /// <summary>内核线程，<c>ps</c> 里显示成 <c>[kworker/0:1]</c> 这样。玩家伪造不了。</summary>
     public bool IsKernelThread => Command.StartsWith('[') && Command.EndsWith(']');
 

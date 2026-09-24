@@ -94,7 +94,45 @@ public sealed partial class LevelCatalog
             errors.Add($"解锁条件成环: {string.Join(" → ", cycle)}，这几关谁都解不开");
 
         if (errors.Count > 0) throw new LevelFormatException(errors);
-        return new LevelCatalog(levels.Select(l => l.Level).ToList());
+        return new LevelCatalog(levels.Select(l => WithHouseKeeping(l.Level)).ToList());
+    }
+
+    /// <summary>
+    /// 机器自带的那些东西，补进管理员的白名单。
+    /// </summary>
+    /// <remarks>
+    /// <para>维护口的监听进程、经它登录进来的会话、关卡摆的那个备份服务 —— 都是
+    /// <b>这台机器本来的样子</b>，不是玩家带来的。关卡作者不该再手抄一遍：抄漏了，
+    /// 管理员就会为机器自带的东西把玩家抓了；端口一改，手抄的那份还会悄悄失效。</para>
+    /// <para>「掩盖」那一步和管理员用的是同一份白名单（<see cref="LevelWorld.Allow"/>），
+    /// 所以这里补一次，两边都对得上。</para>
+    /// </remarks>
+    private static LevelDefinition WithHouseKeeping(LevelDefinition level)
+    {
+        if (level.Admin is not { } admin) return level;
+        if (level.Machines.FirstOrDefault(m => m.Name == admin.Machine) is not { } machine) return level;
+
+        var processes = admin.Allow.Processes.ToList();
+        var ports = admin.Allow.Ports.ToList();
+        int before = processes.Count + ports.Count;
+
+        foreach (var service in machine.Services)
+        {
+            processes.Add($"nc -lk -p {service.Port} *");
+            ports.Add($"tcp/{service.Port}");
+        }
+        if (machine.Access is { } access)
+        {
+            processes.Add($"nc -lk -p {access.Port} *");
+            ports.Add($"tcp/{access.Port}");
+            // 经维护口登录进来的那个 shell。玩家在这台机器上干活是这个口的用途，
+            // 本身不算痕迹 —— 真正会暴露他的是留下的东西（转发没关、工具没删、端口没收）
+            processes.Add("sh +m -i");
+        }
+
+        return before == processes.Count + ports.Count
+            ? level
+            : level with { Admin = admin with { Allow = admin.Allow with { Processes = processes, Ports = ports } } };
     }
 
     private static void Validate(string source, LevelDefinition level, List<string> errors)
@@ -165,6 +203,18 @@ public sealed partial class LevelCatalog
                 if (s.Port is < 1 or > 65535) Error($"机器 {m.Name} 的服务端口 {s.Port} 不在 1..65535");
                 if (m.Files.All(f => f.Path != s.File))
                     Error($"机器 {m.Name} 的服务要提供 \"{s.File}\"，但这台机器上没摆这个文件");
+            }
+            if (m.Access is { } access)
+            {
+                if (access.Port is < 1 or > 65535) Error($"机器 {m.Name} 的维护口端口 {access.Port} 不在 1..65535");
+                else if (m.Services.Any(s => s.Port == access.Port))
+                    Error($"机器 {m.Name} 的维护口和服务抢同一个端口 {access.Port}");
+                if (!UserPattern().IsMatch(access.User))
+                    Error($"机器 {m.Name} 维护口的账号 \"{access.User}\" 不是合法的用户名");
+                // 白送 shell 还开维护口，等于让玩家白跑一趟：他坐在这台机器前面，不必再登录。
+                // 第一台是玩家自己的机器，终端总是摆着的
+                if (m.Shell || m.Name == level.Machines[0].Name)
+                    Error($"机器 {m.Name} 的终端本来就摆在玩家面前，不该再开维护口 —— 二选一");
             }
             if (HardwarePersona.ByName(m.Persona) is null)
                 Error($"机器 {m.Name} 的人设 \"{m.Persona}\" 不存在，可选: {string.Join(", ", HardwarePersona.Presets.Select(p => p.Name))}");
@@ -305,6 +355,11 @@ public sealed partial class LevelCatalog
                     && level.Machines.FirstOrDefault(m => m.Name == scan.Finds) is { } target
                     && target.Nics.All(n => n.Network != scan.Network))
                     error($"{where}: 要扫到的 {scan.Finds} 根本不在 {scan.Network} 里");
+                break;
+            case ProcessCheck process:
+                if (process.Times < 1) error($"{where}: times 至少是 1");
+                if (process.User is null && process.Command is null)
+                    error($"{where}: process 至少要写 user 或 command，否则任何一个进程都算数");
                 break;
             case FileCheck file:
                 if (!ShaPattern().IsMatch(file.Sha256))

@@ -1,3 +1,4 @@
+using GameHacker.Core.Admin;
 using GameHacker.Core.Levels;
 
 namespace GameHacker.Core.Tests;
@@ -207,5 +208,58 @@ public class LevelNetworkTests
         Assert.Contains(ex.Errors, e => e.Contains("两块网卡接在同一个网段"));
         Assert.Contains(ex.Errors, e => e.Contains("广播地址"));
         Assert.Contains(ex.Errors, e => e.Contains("0 块网卡"));
+    }
+
+    [Fact]
+    public void 白送终端和维护口不能同时给()
+    {
+        // 玩家坐在这台机器前面，再让他登录一次是白跑一趟
+        var ex = Rejects(Level(TwoNets, """
+            { "name": "ws",     "nics": [ { "network": "outside", "ip": "10.0.0.1" } ] },
+            { "name": "jump01", "nics": [ { "network": "outside", "ip": "10.0.0.2" } ],
+              "shell": true, "access": { "port": 2222, "user": "svc" } }
+            """));
+        Assert.Contains(ex.Errors, e => e.Contains("二选一"));
+    }
+
+    [Fact]
+    public void 玩家自己的机器不该开维护口()
+    {
+        var ex = Rejects(Level(TwoNets, """
+            { "name": "ws", "nics": [ { "network": "outside", "ip": "10.0.0.1" } ],
+              "access": { "port": 2222, "user": "svc" } }
+            """));
+        Assert.Contains(ex.Errors, e => e.Contains("二选一"));
+    }
+
+    [Fact]
+    public void 机器自带的维护口和服务自动进管理员白名单()
+    {
+        // 关卡作者不该手抄一遍：抄漏了，管理员就为机器自带的东西把玩家抓了；
+        // 端口一改，手抄的那份还会悄悄失效
+        var level = LevelCatalog.Parse([("n.json", """
+            { "id": "n", "title": "n", "track": "mission", "status": "draft",
+              "networks": [ { "name": "outside", "vlan": 10, "subnet": "10.0.0.0/24" } ],
+              "machines": [
+                { "name": "ws",     "nics": [ { "network": "outside", "ip": "10.0.0.1" } ] },
+                { "name": "jump01", "nics": [ { "network": "outside", "ip": "10.0.0.2" } ],
+                  "access": { "port": 2222, "user": "svc-backup" },
+                  "files": [ { "path": "/srv/x.txt", "text": "x" } ],
+                  "services": [ { "port": 9000, "file": "/srv/x.txt" } ] }
+              ],
+              "admin": { "machine": "jump01", "routine": [ { "id": "p", "check": "processes" } ] } }
+            """)]).Levels[0];
+
+        var allow = level.Admin!.Allow;
+        Assert.Contains("nc -lk -p 2222 *", allow.Processes);
+        Assert.Contains("nc -lk -p 9000 *", allow.Processes);
+        Assert.Contains("sh +m -i", allow.Processes);          // 经维护口登录进来的那个 shell
+        Assert.Contains("tcp/2222", allow.Ports);
+        Assert.Contains("tcp/9000", allow.Ports);
+
+        // 真拿这份白名单去看那几个进程，它们都得放行
+        var whitelist = new ProcessWhitelist(allow.Processes);
+        Assert.True(whitelist.Allows(new ProcessLine(1, "root", "?", "nc -lk -p 2222 -e /usr/sbin/rlogind")));
+        Assert.True(whitelist.Allows(new ProcessLine(2, "svc-back", "?", "sh +m -i")));
     }
 }

@@ -177,6 +177,57 @@ public class LevelCheckTests
         Assert.True(run.IsComplete);
     }
 
+    // --- 进去了没有 ----------------------------------------------------------
+
+    [Fact]
+    public void 进去了_那台机器上有属于这个账号的进程()
+    {
+        var run = RunWith(new ProcessCheck { Machine = "jump01", User = "svc-backup" });
+        Assert.Equal([new StateQuery("jump01") { Processes = true }], run.Wanted);
+
+        // 机器上一直有个 root 的 shell（物理控制台），那不是玩家
+        run.Observe(new StateSnapshot("jump01") { Processes = [Process("/bin/sh --"), Process("syslogd -n")] });
+        Assert.Equal(0, run.CurrentIndex);
+        Assert.Contains("svc-backup", run.Remaining);
+
+        // 别的机器上有不算
+        run.Observe(new StateSnapshot("ws") { Processes = [Process("sh +m -i", user: "svc-back")] });
+        Assert.Equal(0, run.CurrentIndex);
+
+        run.Observe(new StateSnapshot("jump01") { Processes = [Process("/bin/sh --"), Process("sh +m -i", user: "svc-back")] });
+        Assert.True(run.IsComplete);
+    }
+
+    [Fact]
+    public void 进去了_账号名长过八个字符也认得出来()
+    {
+        // busybox 的 ps 把 USER 列截到 8 个字符。不当回事的话，关卡里凡是写了
+        // 长名字的账号，这一步永远不亮，而输出看上去完全正常
+        var run = RunWith(new ProcessCheck { Machine = "jump01", User = "svc-backup" });
+        run.Observe(new StateSnapshot("jump01") { Processes = [Process("sh +m -i", user: "svc-back")] });
+        Assert.True(run.IsComplete);
+    }
+
+    [Fact]
+    public void 进去了_也能只认命令()
+    {
+        var run = RunWith(new ProcessCheck { Machine = "files01", Command = "nc -lk -p 4444*" });
+        run.Observe(new StateSnapshot("files01") { Processes = [Process("nc -lk -p 9000 -e cat /srv/backup/ledger.txt")] });
+        Assert.Equal(0, run.CurrentIndex);
+
+        run.Observe(new StateSnapshot("files01") { Processes = [Process("nc -lk -p 4444 -e /bin/sh")] });
+        Assert.True(run.IsComplete);
+    }
+
+    [Fact]
+    public void 进去了_没问到进程表的答复不算数()
+    {
+        var run = RunWith(new ProcessCheck { Machine = "jump01", User = "svc-backup" });
+        // 只回答了「有没有那份文件」的快照，它的进程表是「没问」，不是「一个都没有」
+        run.Observe(new StateSnapshot("jump01") { FileSha = new string('a', 64), FileFound = true });
+        Assert.Equal(0, run.CurrentIndex);
+    }
+
     // --- 掩盖 ---------------------------------------------------------------
 
     private static ProcessLine Process(string command, string user = "root", string tty = "?") =>

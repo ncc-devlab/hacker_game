@@ -117,6 +117,57 @@ public sealed record MachineDefinition
 
     /// <summary>这台机器上对外开的服务。</summary>
     public IReadOnlyList<ServiceDefinition> Services { get; init; } = [];
+
+    /// <summary>
+    /// 玩家面前摆着这台机器的终端。
+    /// </summary>
+    /// <remarks>
+    /// <para><b>玩家自己的机器（第一台）总是摆着</b>，不用写。别的机器默认<b>没有</b>：
+    /// 玩家要在那台机器上干活，就得自己想办法进去 —— 从自己的终端连过去
+    /// （见 <see cref="Access"/>），而不是游戏白送一个 shell。</para>
+    /// <para>教学关和特殊关可以打开它：白送 shell 是为了讲清楚某个机制，不是实战关的常态。
+    /// 调试时不必改关卡文件，设 <c>GAMEHACKER_ALL_SHELLS=1</c> 就能把所有机器的终端都摆出来。</para>
+    /// </remarks>
+    public bool Shell { get; init; }
+
+    /// <summary>
+    /// 这台机器上开着的远程维护口：玩家从自己的终端连过去，用账号口令登录。
+    /// </summary>
+    /// <remarks>
+    /// 口令每局现生成，关卡文件里不留 —— 和管理员的账号是同一个规矩。
+    /// </remarks>
+    public AccessDefinition? Access { get; init; }
+}
+
+/// <summary>
+/// 一台机器上的远程维护口：玩家进这台机器的那条路。
+/// </summary>
+/// <remarks>
+/// <para><b>为什么是它而不是白送终端</b>：跳板机是玩家<b>打进去</b>的，不是他本来就坐在前面的。
+/// 界面上只摆玩家自己那台机器的终端，别人的机器一律得从网络上进 —— 这一条是关卡机制的地基，
+/// 「开转发」「拿文件」这些步骤才有前提。</para>
+/// <para><b>它是真的</b>：客户机上真的跑着一个监听进程，真的读账号口令、真的比对
+/// <c>/etc/shadow</c> 里的哈希、真的 <c>su</c> 成那个账号。于是玩家在
+/// <c>ps</c>、<c>netstat</c> 里看得见它，管理员也看得见；连错口令会被记进系统日志。</para>
+/// <para><b>它没有 pty</b>，就是一条裸套接字上的 shell（老式维护口本来就这样）。
+/// 这一点对玩家是可见的：命令照跑，但没有作业控制。</para>
+/// </remarks>
+public sealed record AccessDefinition
+{
+    /// <summary>监听端口。</summary>
+    public required int Port { get; init; }
+
+    /// <summary>玩家手上那个账号的用户名。口令每局现生成。</summary>
+    public required string User { get; init; }
+
+    /// <summary>
+    /// 这个账号能不能 sudo。
+    /// </summary>
+    /// <remarks>
+    /// 给 true 的话是免口令的 —— 裸套接字上没有 tty，真的 sudo 问口令时会
+    /// 报「no tty present」，那不是关卡想考的东西。真正的提权留给以后的关卡做。
+    /// </remarks>
+    public bool Sudo { get; init; }
 }
 
 /// <summary>摆在机器上的一个文件。</summary>

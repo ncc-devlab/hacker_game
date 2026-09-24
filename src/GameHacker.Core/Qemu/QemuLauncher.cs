@@ -52,6 +52,11 @@ public sealed record VmSpec
 
     /// <summary>这台机器上对外开的服务。</summary>
     public IReadOnlyList<GuestService> Services { get; init; } = [];
+
+    /// <summary>
+    /// 远程维护口。给了就在这个端口上开一个真的登录服务，玩家从别的机器连过来登录。
+    /// </summary>
+    public GuestAccess? Access { get; init; }
 }
 
 /// <summary>
@@ -75,6 +80,21 @@ public sealed record GuestFile(string Path, string Text);
 /// <c>nc -lk</c>，所以它在 <c>ps</c> 里看得见、能被杀掉、也能被玩家自己拿来用。
 /// </remarks>
 public sealed record GuestService(int Port, string File);
+
+/// <summary>
+/// 客户机上的远程维护口：一个真的登录服务。
+/// </summary>
+/// <param name="Port">监听端口。</param>
+/// <param name="User">账号名。开机时真的建出这个账号。</param>
+/// <param name="Password">口令，宿主生成，经 cmdline 传进去。</param>
+/// <param name="Sudo">这个账号能不能免口令 sudo。</param>
+/// <remarks>
+/// <para>实现是客户机上真的 <c>nc -lk -e</c> 加一个登录脚本：读账号口令、拿
+/// <c>cryptpw</c> 比对哈希、<c>su</c> 成那个账号。所以它在 <c>ps</c> 和
+/// <c>netstat</c> 里都看得见，也能被杀掉 —— 没有一处是游戏逻辑假装的。</para>
+/// <para>口令不能带冒号：cmdline 上这几段是用冒号分的。</para>
+/// </remarks>
+public sealed record GuestAccess(int Port, string User, string Password, bool Sudo);
 
 /// <summary>管理员在客户机上的账号。口令由宿主生成，只有游戏自己知道。</summary>
 public sealed record AdminAccount(string User, string Password);
@@ -175,6 +195,11 @@ public sealed class QemuLauncher : IAsyncDisposable, IDisposable
             $" m0.file{i}={f.Path}:{Convert.ToBase64String(Encoding.UTF8.GetBytes(f.Text))}"));
         string serviceArg = string.Concat(spec.Services.Select((s, i) =>
             $" m0.serve{i}={s.Port}:{s.File}"));
+        // 远程维护口：端口:账号:口令:能不能 sudo。口令和管理员的一样不落进关卡文件
+        string accessArg = spec.Access is not { } access ? ""
+            : $" m0.access={access.Port}:{access.User}:{access.Password}:{(access.Sudo ? 1 : 0)}";
+        if (spec.Access?.Password.Contains(':') is true)
+            throw new ArgumentException("维护口的口令不能带冒号，cmdline 上这几段是用冒号分的", nameof(spec));
 
         var args = new List<string>
         {
@@ -186,7 +211,7 @@ public sealed class QemuLauncher : IAsyncDisposable, IDisposable
             "-initrd", spec.InitrdPath,
             "-append", $"console=ttyS0 quiet loglevel=3 tsc=unstable "
                        + $"m0.host={spec.Name}{ipArg}{gatewayArg}{rootArg}{personaArg}{adminArg}"
-                       + $"{fileArg}{serviceArg}",
+                       + $"{fileArg}{serviceArg}{accessArg}",
             "-chardev", chardev("con", consolePort), "-serial", "chardev:con",
             "-chardev", chardev("ctl", controlPort), "-serial", "chardev:ctl",
             "-qmp", $"tcp:127.0.0.1:{qmpPort},server=on,wait=off",
