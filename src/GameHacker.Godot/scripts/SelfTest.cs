@@ -1,4 +1,3 @@
-using System;
 using System.Collections.Generic;
 using System.Linq;
 using System.Text;
@@ -102,9 +101,66 @@ public static class SelfTest
         string dmesg = await CaptureAsync(host, terminal, "dmesg | grep -ci qemu");
         Check("dmesg 里没有 qemu 字样", dmesg.Contains("0"), Tail(dmesg));
 
+        // --- 探针：玩家的真实路径（鼠标点击聚焦 + Tab/方向键）--------------
+        // 放在最后：它要移动终端窗、重设根窗口尺寸、还会在 shell 里留下半截状态，
+        // 夹在上面那些断言中间会把它们带偏（实测后续命令读到错行、冒出 bc 报错）。
+        // 前面用 GrabFocus 验的是「焦点在时输入链通不通」，这里补的是玩家真实走的
+        // 「点一下终端才聚焦」那条路 —— issue「Tab/方向键不好用」正出在这条路上。
+        if (System.Environment.GetEnvironmentVariable("GAMEHACKER_PROBE_CLICK") is "1")
+            await ProbeClickFocusAsync(host, terminal);
+
         int failed = Results.FindAll(r => !r.Ok).Count;
         GD.Print($"[selftest] {Results.Count - failed}/{Results.Count} 项通过");
         return failed == 0;
+    }
+
+    /// <summary>
+    /// 玩家的真实路径：鼠标点进终端才聚焦，然后 Tab 补全、方向键移光标都要能用。
+    /// </summary>
+    /// <remarks>
+    /// 无头下根 Window 尺寸近乎为零，full-rect 控件会坍缩到负坐标，按全局坐标点击
+    /// 命中不了 —— 所以先给根窗口一个真实尺寸、再把终端窗摆到确定的屏幕内位置。
+    /// </remarks>
+    private static async Task ProbeClickFocusAsync(Node host, Control terminal)
+    {
+        host.GetTree().Root.Size = new Vector2I(1600, 900);
+        await host.ToSignal(host.GetTree(), SceneTree.SignalName.ProcessFrame);
+        await host.ToSignal(host.GetTree(), SceneTree.SignalName.ProcessFrame);
+
+        Node walk = terminal;
+        while (walk is not null && walk is not GameWindow) walk = walk.GetParent();
+        if (walk is GameWindow win)
+        {
+            win.PlaceAt(new Rect2(120, 120, 640, 400));
+            win.GetParent<Desktop>()?.BringToFront(win);
+        }
+        terminal.ReleaseFocus();
+        await host.ToSignal(host.GetTree(), SceneTree.SignalName.ProcessFrame);
+        await host.ToSignal(host.GetTree(), SceneTree.SignalName.ProcessFrame);
+
+        var rect = terminal.GetGlobalRect();
+        await ClickAsync(host, rect.Position + rect.Size / 2);
+        Check("[探针] 点击后终端拿到焦点", terminal.HasFocus(), $"focus_mode={terminal.FocusMode}");
+
+        terminal.Call("clear");
+        await TypeAsync(host, "ls /et");
+        await Task.Delay(1200);
+        await TypeKeyAsync(host, Key.Tab);
+        await Task.Delay(2000);
+        string tab = ScreenText(terminal);
+        Check("[探针] 点击聚焦后 Tab 补全", tab.Contains("ls /etc/"), $"focus={terminal.HasFocus()} | {Tail(tab)}");
+
+        await TypeKeyAsync(host, Key.U, ctrl: true);
+        terminal.Call("clear");
+        await TypeAsync(host, "abc");
+        await Task.Delay(500);
+        await TypeKeyAsync(host, Key.Left);
+        await TypeKeyAsync(host, Key.Left);
+        await TypeAsync(host, "X");
+        await Task.Delay(800);
+        string arrow = ScreenText(terminal);
+        Check("[探针] 方向键左移光标 (abc -> aXbc)", arrow.Contains("aXbc"), $"focus={terminal.HasFocus()} | {Tail(arrow)}");
+        await TypeKeyAsync(host, Key.U, ctrl: true);
     }
 
     /// <summary>自检报告，写进日志给三端验证留证据。</summary>
@@ -170,6 +226,24 @@ public static class SelfTest
             if (c == '\n') await TypeKeyAsync(host, Key.Enter);
             else await TypeKeyAsync(host, KeyOf(c), unicode: c);
             await Task.Delay(40);
+        }
+    }
+
+    /// <summary>像玩家一样用鼠标点一下某个屏幕坐标（按下+抬起）。</summary>
+    private static async Task ClickAsync(Node host, Vector2 globalPos)
+    {
+        foreach (bool pressed in new[] { true, false })
+        {
+            var ev = new InputEventMouseButton
+            {
+                ButtonIndex = MouseButton.Left,
+                Pressed = pressed,
+                Position = globalPos,
+                GlobalPosition = globalPos,
+            };
+            Input.ParseInputEvent(ev);
+            await host.ToSignal(host.GetTree(), SceneTree.SignalName.ProcessFrame);
+            await host.ToSignal(host.GetTree(), SceneTree.SignalName.ProcessFrame);
         }
     }
 
