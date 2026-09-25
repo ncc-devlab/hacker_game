@@ -105,6 +105,13 @@ public sealed class ControlChannel : IAsyncDisposable
         }
     }
 
+    /// <summary>
+    /// 每收到一条事件就触发（在后台读线程上）。给需要持续监听某类事件的一方用，
+    /// 比如玩家机上「神器」发来的 <c>reach</c> 请求。<see cref="WaitEventAsync"/> 是一次性的，
+    /// 不适合当长期监听。
+    /// </summary>
+    public event Action<JsonObject>? EventPublished;
+
     private void Publish(JsonObject ev)
     {
         lock (_subscribers)
@@ -115,6 +122,8 @@ public sealed class ControlChannel : IAsyncDisposable
             foreach (var subscriber in _subscribers)
                 subscriber.Writer.TryWrite(ev);
         }
+        // 锁外触发：处理器里可能回头调用本通道（比如据此发一条命令），在锁里会死锁
+        EventPublished?.Invoke(ev);
     }
 
     private Channel<JsonObject> Subscribe(bool history = true)

@@ -219,6 +219,15 @@ public sealed partial class LevelCatalog
             if (HardwarePersona.ByName(m.Persona) is null)
                 Error($"机器 {m.Name} 的人设 \"{m.Persona}\" 不存在，可选: {string.Join(", ", HardwarePersona.Presets.Select(p => p.Name))}");
             if (m.Memory < 64) Error($"机器 {m.Name} 内存 {m.Memory}MB 太小");
+            if (m.Blackwall)
+            {
+                // blackwall 是「从玩家机接进别的机器」的上帝模式，接自己没有意义
+                if (m.Name == level.Machines[0].Name)
+                    Error($"机器 {m.Name} 是玩家自己的机器，blackwall 是用来接进别人的机器的");
+                // 教学关专属：实战关写了会被运行时忽略，这里直接拦下免得作者以为它生效了
+                if (level.Track != LevelTrack.Tutorial)
+                    Error($"机器 {m.Name} 开了 blackwall，但它只在教学关（track: tutorial）生效");
+            }
         }
 
         if (level.Admin is { } admin)

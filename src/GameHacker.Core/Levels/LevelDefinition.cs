@@ -131,6 +131,22 @@ public sealed record MachineDefinition
     public bool Shell { get; init; }
 
     /// <summary>
+    /// 允许「神器」（blackwall）从玩家机直接接进这台机器：给个 IP 就在桌面上弹出一扇
+    /// 直连它的 root 终端，不用登录、不用打进去。
+    /// </summary>
+    /// <remarks>
+    /// <para><b>这是新手教学关专属的上帝模式</b>，明摆着违背 <see cref="Access"/> 那套
+    /// 「别人的机器要打进去」的规矩 —— 它存在的意义就是让新手先看见一个能用的会话
+    /// （真 pty，Tab/方向键都在），再去学怎么自己挣到它。所以只在教学关（
+    /// <see cref="LevelTrack.Tutorial"/>）生效，实战关里写了也会被忽略；玩家机上的
+    /// <c>blackwall</c> 命令也只在新手模式随工具箱装（见 <c>m0_install_tools</c>）。</para>
+    /// <para>机制上：给这台机器预留一个 ISA 串口，上面常驻一个 <c>getty -n -l /bin/sh</c>
+    /// 的 root shell（和玩家机多开终端同一套），玩家 <c>blackwall &lt;ip&gt;</c> 时宿主把它
+    /// 桥接成桌面上一扇新窗。默认 <b>关</b> —— 这就是「配置某些机器不可如此连接」。</para>
+    /// </remarks>
+    public bool Blackwall { get; init; }
+
+    /// <summary>
     /// 这台机器上开着的远程维护口：玩家从自己的终端连过去，用账号口令登录。
     /// </summary>
     /// <remarks>

@@ -68,6 +68,12 @@ public sealed record VmSpec
     public bool Tools { get; init; }
 
     /// <summary>
+    /// 往这台机器上装「神器」<c>blackwall</c> 命令（随新手工具箱）。只在教学关且这一关真有
+    /// blackwall 目标机时才给玩家自己的机器装，免得实战关里装了一个永远「够不着」的命令。
+    /// </summary>
+    public bool BlackwallClient { get; init; }
+
+    /// <summary>
     /// 玩家想在这台机器上多开几个终端（桌面上的「终端」图标）。
     /// </summary>
     /// <remarks>
@@ -77,6 +83,17 @@ public sealed record VmSpec
     /// <see cref="QemuLauncher.ExtraConsoleTtys(bool, int)"/>。
     /// </remarks>
     public int ExtraConsoles { get; init; }
+
+    /// <summary>
+    /// 给这台机器预留一个「神器」（blackwall）接入口：一个常驻 <c>getty -n -l /bin/sh</c>
+    /// 的 ISA 串口，宿主可以随时把它桥接成玩家桌面上一扇直连的 root 终端。
+    /// </summary>
+    /// <remarks>
+    /// 只是预留串口 + 起 getty，接不接、什么时候接由宿主侧（Level）决定。它排在管理员
+    /// 终端和多开终端之后，占用下一个空闲串口，见 <see cref="QemuLauncher.BlackwallTty(VmSpec)"/>。
+    /// 这是教学关专属的上帝模式，见 <c>MachineDefinition.Blackwall</c>。
+    /// </remarks>
+    public bool Blackwall { get; init; }
 }
 
 /// <summary>多开的一个终端：客户机里的设备名（如 <c>ttyS3</c>）和宿主这头的通道。</summary>
@@ -168,6 +185,29 @@ public sealed class QemuLauncher : IAsyncDisposable, IDisposable
     public static IReadOnlyList<string> ExtraConsoleTtys(VmSpec spec) =>
         ExtraConsoleTtys(spec.Admin is not null, spec.ExtraConsoles);
 
+    /// <summary>
+    /// 「神器」（blackwall）预留的那个串口。排在管理员终端和多开终端之后，占下一个空闲串口。
+    /// <see cref="VmSpec.Blackwall"/> 为 false、或串口已经用满时为 null。
+    /// </summary>
+    public static string? BlackwallTty(VmSpec spec)
+    {
+        if (!spec.Blackwall) return null;
+        int first = spec.Admin is not null ? 3 : 2;
+        int slot = first + ExtraConsoleTtys(spec).Count;
+        return slot < SerialPorts ? $"ttyS{slot}" : null;
+    }
+
+    /// <summary>
+    /// 客户机上所有要起 getty 的额外串口（多开终端在前，blackwall 在后），
+    /// 也就是传给客户机的 <c>m0.consoles</c>。ttyS0 的主 getty 不在其中，单独起。
+    /// </summary>
+    public static IReadOnlyList<string> PlayerTtys(VmSpec spec)
+    {
+        var list = ExtraConsoleTtys(spec).ToList();
+        if (BlackwallTty(spec) is { } tty) list.Add(tty);
+        return list;
+    }
+
     /// <summary>等 QEMU 自己退出多久，超时就强杀。实测本机一台约 30ms。</summary>
     public static readonly TimeSpan QuitGrace = TimeSpan.FromMilliseconds(1500);
 
@@ -208,12 +248,19 @@ public sealed class QemuLauncher : IAsyncDisposable, IDisposable
     /// <summary>管理员的登录终端（ttyS2）。<see cref="VmSpec.Admin"/> 为空时不开。</summary>
     public SerialChannel? Admin { get; private set; }
 
+    /// <summary>
+    /// 「神器」（blackwall）接入口的通道。<see cref="VmSpec.Blackwall"/> 为空时为 null。
+    /// 客户机那头常驻一个 root shell，宿主按需把它桥接成玩家桌面上一扇终端。
+    /// </summary>
+    public SerialChannel? Blackwall { get; private set; }
+
     /// <summary>多开的终端。<see cref="VmSpec.ExtraConsoles"/> 为 0 时是空的。</summary>
     public IReadOnlyList<ExtraConsole> Extras { get; private set; } = [];
     public int QmpPort { get; private set; }
 
     public IReadOnlyList<string> BuildArguments(VmSpec spec, int consolePort, int controlPort, int qmpPort,
-                                               int adminPort = 0, IReadOnlyList<int>? extraPorts = null)
+                                               int adminPort = 0, IReadOnlyList<int>? extraPorts = null,
+                                               int blackwallPort = 0)
     {
         string chardev(string id, int port) =>
             $"socket,id={id},host=127.0.0.1,port={port},server=off,reconnect-ms=1000";
@@ -242,11 +289,20 @@ public sealed class QemuLauncher : IAsyncDisposable, IDisposable
         string accessArg = spec.Access is not { } access ? ""
             : $" m0.access={access.Port}:{access.User}:{access.Password}:{(access.Sudo ? 1 : 0)}";
         string toolsArg = spec.Tools ? " m0.tools=1" : "";
+        string blackwallToolArg = spec.BlackwallClient ? " m0.blackwall_tool=1" : "";
         var extraTtys = ExtraConsoleTtys(spec);
         extraPorts ??= [];
         if (extraPorts.Count != extraTtys.Count)
             throw new ArgumentException($"多开终端要 {extraTtys.Count} 个端口，给了 {extraPorts.Count} 个", nameof(extraPorts));
-        string consolesArg = extraTtys.Count == 0 ? "" : $" m0.consoles={string.Join(',', extraTtys)}";
+        string? blackwallTty = BlackwallTty(spec);
+        if (spec.Blackwall && blackwallTty is null)
+            throw new ArgumentException("这台机器没有空闲串口留给 blackwall（管理员和多开终端已经占满）", nameof(spec));
+        if (blackwallTty is not null && blackwallPort == 0)
+            throw new ArgumentException("要开 blackwall 但没给它的端口", nameof(blackwallPort));
+        // m0.consoles 里既有多开终端也有 blackwall：客户机对这几个 ttyS 一视同仁地起
+        // getty、放行 resize/hangup。blackwall 排在最后
+        var consoleTtys = PlayerTtys(spec);
+        string consolesArg = consoleTtys.Count == 0 ? "" : $" m0.consoles={string.Join(',', consoleTtys)}";
         if (spec.Access?.Password.Contains(':') is true)
             throw new ArgumentException("维护口的口令不能带冒号，cmdline 上这几段是用冒号分的", nameof(spec));
 
@@ -260,7 +316,7 @@ public sealed class QemuLauncher : IAsyncDisposable, IDisposable
             "-initrd", spec.InitrdPath,
             "-append", $"console=ttyS0 quiet loglevel=3 tsc=unstable "
                        + $"m0.host={spec.Name}{ipArg}{gatewayArg}{rootArg}{personaArg}{adminArg}"
-                       + $"{fileArg}{serviceArg}{accessArg}{toolsArg}{consolesArg}",
+                       + $"{fileArg}{serviceArg}{accessArg}{toolsArg}{blackwallToolArg}{consolesArg}",
             "-chardev", chardev("con", consolePort), "-serial", "chardev:con",
             "-chardev", chardev("ctl", controlPort), "-serial", "chardev:ctl",
             "-qmp", $"tcp:127.0.0.1:{qmpPort},server=on,wait=off",
@@ -284,6 +340,15 @@ public sealed class QemuLauncher : IAsyncDisposable, IDisposable
             args.Add(chardev($"x{i}", extraPorts[i]));
             args.Add("-serial");
             args.Add($"chardev:x{i}");
+        }
+
+        // blackwall 接入口排在多开终端之后，落在 BlackwallTty 算出来的那个串口上
+        if (blackwallTty is not null)
+        {
+            args.Add("-chardev");
+            args.Add(chardev("bw", blackwallPort));
+            args.Add("-serial");
+            args.Add("chardev:bw");
         }
 
         for (int i = 0; i < spec.Nics.Count; i++)
@@ -328,6 +393,7 @@ public sealed class QemuLauncher : IAsyncDisposable, IDisposable
         Control = new SerialChannel();
         Admin = spec.Admin is null ? null : new SerialChannel();
         Extras = ExtraConsoleTtys(spec).Select(tty => new ExtraConsole(tty, new SerialChannel())).ToList();
+        Blackwall = BlackwallTty(spec) is null ? null : new SerialChannel();
         QmpPort = FreeTcpPort();
 
         var startInfo = new ProcessStartInfo(_qemuPath)
@@ -337,7 +403,7 @@ public sealed class QemuLauncher : IAsyncDisposable, IDisposable
             UseShellExecute = false,
         };
         var args = BuildArguments(spec, Console.Port, Control.Port, QmpPort, Admin?.Port ?? 0,
-                                  Extras.Select(x => x.Channel.Port).ToList());
+                                  Extras.Select(x => x.Channel.Port).ToList(), Blackwall?.Port ?? 0);
         foreach (var arg in args)
             startInfo.ArgumentList.Add(arg);
         CommandLine = _qemuPath + " " + string.Join(' ', args.Select(Quote));
@@ -436,6 +502,7 @@ public sealed class QemuLauncher : IAsyncDisposable, IDisposable
         if (Console is not null) await Console.DisposeAsync().ConfigureAwait(false);
         if (Control is not null) await Control.DisposeAsync().ConfigureAwait(false);
         if (Admin is not null) await Admin.DisposeAsync().ConfigureAwait(false);
+        if (Blackwall is not null) await Blackwall.DisposeAsync().ConfigureAwait(false);
         foreach (var extra in Extras) await extra.Channel.DisposeAsync().ConfigureAwait(false);
     }
 
@@ -455,6 +522,7 @@ public sealed class QemuLauncher : IAsyncDisposable, IDisposable
         Console?.DisposeAsync().AsTask().Wait(2000);
         Control?.DisposeAsync().AsTask().Wait(2000);
         Admin?.DisposeAsync().AsTask().Wait(2000);
+        Blackwall?.DisposeAsync().AsTask().Wait(2000);
         foreach (var extra in Extras) extra.Channel.DisposeAsync().AsTask().Wait(2000);
     }
 
