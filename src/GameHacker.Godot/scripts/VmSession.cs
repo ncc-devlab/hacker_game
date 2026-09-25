@@ -54,6 +54,7 @@ public sealed class VmSession : IAsyncDisposable, IDisposable
             _launcher.Control!.RunAsync(_cts.Token),
         };
         if (_launcher.Admin is not null) pumps.Add(_launcher.Admin.RunAsync(_cts.Token));
+        if (_launcher.Blackwall is not null) pumps.Add(_launcher.Blackwall.RunAsync(_cts.Token));
         foreach (var extra in _launcher.Extras) pumps.Add(extra.Channel.RunAsync(_cts.Token));
         _pump = Task.WhenAll(pumps);
     }
@@ -73,6 +74,12 @@ public sealed class VmSession : IAsyncDisposable, IDisposable
 
     /// <summary>管理员的登录终端（ttyS2）。这台机器没有管理员时为 <c>null</c>。</summary>
     public SerialChannel? AdminTty => _launcher.Admin;
+
+    /// <summary>
+    /// 「神器」（blackwall）接入口的通道。这台机器没开 blackwall 时为 <c>null</c>。
+    /// 客户机那头常驻一个 root shell，玩家 <c>blackwall &lt;ip&gt;</c> 时由宿主桥接成桌面上一扇窗。
+    /// </summary>
+    public SerialChannel? BlackwallTty => _launcher.Blackwall;
     public TerminalBridge Bridge { get; }
 
     /// <summary>多开终端的桥接，和传进来的终端节点一一对应。</summary>

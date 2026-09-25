@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.Linq;
+using System.Text.Json.Nodes;
 using System.Threading.Tasks;
 using GameHacker.Core.Admin;
 using GameHacker.Core.Channels;
@@ -44,6 +45,11 @@ public partial class Level : Control
     /// <summary>玩家机上多开的终端：窗、终端节点、客户机里的设备名。开局都是关着的。</summary>
     private readonly List<(GameWindow Window, Control Terminal, string Tty)> _extraTerms = [];
     private readonly List<(GameWindow Window, Button Button, string Label)> _taskbar = [];
+
+    // 「神器」blackwall：教学关里开了接入口的目标机。IP -> 目标机会话；每台目标机
+    // 在玩家桌面上最多一扇直连窗，第一次接进去时才建，之后复用
+    private readonly Dictionary<string, VmSession> _blackwallByIp = [];
+    private readonly Dictionary<VmSession, (GameWindow Window, Control Terminal, TerminalBridge Bridge)> _blackwallWins = [];
 
     private readonly PacketLog _packetLog = new();
     private VirtualSwitch? _switch;
@@ -309,6 +315,92 @@ public partial class Level : Control
     }
 
     /// <summary>
+    /// 登记教学关里开了「神器」接入口的目标机，并监听玩家机发来的 reach 请求。
+    /// </summary>
+    /// <remarks>
+    /// 玩家机上的 <c>blackwall &lt;ip&gt;</c> 脚本往自己的 ttyS1 写一行
+    /// <c>{"ev":"reach","ip":..}</c>，宿主的 <see cref="ControlChannel"/> 解析出来经
+    /// <see cref="ControlChannel.EventPublished"/> 到这里。这是唯一一处「客户机主动请宿主办事」，
+    /// 靠教学关专属兜住（见 <see cref="NewSpec"/> 的 Blackwall 门槛）。
+    /// </remarks>
+    private void RegisterBlackwall()
+    {
+        for (int i = 0; i < _sessions.Count; i++)
+        {
+            if (_sessions[i].BlackwallTty is null) continue;   // 这台机器没开接入口
+            foreach (var nic in _level.Machines[i].Nics)
+                _blackwallByIp[nic.Ip] = _sessions[i];
+        }
+        if (_blackwallByIp.Count == 0) return;
+
+        // 事件在后台读线程上来，UI 操作要倒回主线程
+        _sessions[0].Control.EventPublished += ev =>
+        {
+            if (ev["ev"]?.GetValue<string>() != "reach") return;
+            if (ev["ip"]?.GetValue<string>() is not { } ip) return;
+            Callable.From(() => OpenBlackwallCore(ip)).CallDeferred();
+        };
+    }
+
+    /// <summary>
+    /// 「神器」接进一台机器：给个 IP，在桌面上弹出（或提回最前）一扇直连它的 root 终端。
+    /// </summary>
+    /// <remarks>
+    /// 目标机那头是常驻的 <c>getty -n -l /bin/sh</c>，所以这是个真 pty ——
+    /// Tab 补全、方向键都能用，不像维护口那条裸套接字。每台目标机只开一扇窗，复用。
+    /// 自检也直接走这条路（不经玩家机的脚本）。
+    /// </remarks>
+    /// <returns>接进去的那个终端节点；够不着或没开接入口时为 null。</returns>
+    private Control? OpenBlackwallCore(string ip)
+    {
+        if (!_blackwallByIp.TryGetValue(ip, out var target))
+        {
+            SetStatus($"blackwall: 够不着 {ip} —— 这台机器没开神器通道", Colors.Orange);
+            return null;
+        }
+        if (target.BlackwallTty is not { } channel)
+        {
+            SetStatus($"blackwall: {ip} 的接入口没起来", Colors.Orange);
+            return null;
+        }
+
+        if (!_blackwallWins.TryGetValue(target, out var slot))
+        {
+            var terminal = NewTerminal($"Blackwall_{target.Spec.Name}");
+            var window = _desktop.Open($"blackwall — {target.Spec.Name} {ip}", terminal);
+            terminal.FocusEntered += () => _desktop.BringToFront(window);
+            var bridge = new TerminalBridge { Name = $"Bridge_bw_{target.Spec.Name}" };
+            AddChild(bridge);
+            bridge.Attach(terminal, channel, target.Control, QemuLauncher.BlackwallTty(target.Spec)!);
+            bridge.PlayerSubmitted += NudgeProbe;
+            // 关窗就挂断那头的会话，getty 重开一个干净的；下次接进去是全新 shell
+            window.Closed += _ => bridge.HangUp();
+            AddTaskButton(window, $"⚡{target.Spec.Name}");
+            slot = (window, terminal, bridge);
+            _blackwallWins[target] = slot;
+        }
+
+        slot.Bridge.ResetScreen();
+        // 从玩家自己的机器窗错开一点摆，一眼看出是神器接进来的
+        var anchor = _machineWindows.FirstOrDefault();
+        if (anchor is not null)
+        {
+            var size = anchor.Rect.Size.Max(new Vector2(560, 320)).Min(_desktop.Size * 0.7f);
+            slot.Window.PlaceAt(new Rect2(anchor.Position + new Vector2(48, 48), size));
+        }
+        slot.Window.Reopen();
+        slot.Terminal.GrabFocus();
+        var bw = slot.Bridge;
+        GetTree().CreateTimer(0.25).Timeout += () =>
+        {
+            if (!IsInstanceValid(bw)) return;
+            bw.ResendSize();
+            bw.Poke();
+        };
+        return slot.Terminal;
+    }
+
+    /// <summary>
     /// 顶栏上那排按钮，相当于任务栏：点一下没在前台的窗就提上来，
     /// 点前台那扇就最小化，最小化着的就还原。关掉的窗按钮也跟着消失。
     /// </summary>
@@ -454,6 +546,8 @@ public partial class Level : Control
                 session.Bridge.PlayerSubmitted += NudgeProbe;
                 foreach (var extra in session.ExtraBridges) extra.PlayerSubmitted += NudgeProbe;
             }
+
+            RegisterBlackwall();
 
             SetStatus(GameState.Instance.Mode == PlayMode.Novice
                 ? $"{_sessions.Count} 台机器就绪。新手模式：你的机器上装了几个工具，敲 tools 看看"
@@ -667,9 +761,16 @@ public partial class Level : Control
             // 新手模式给玩家自己的机器装一套工具。它们不做玩家做不到的事，
             // 只是把那几条命令替他跑一遍并打出来 —— 而且都是 cat 得出来的脚本
             Tools = index == 0 && GameState.Instance.Mode == PlayMode.Novice,
+            // 只有教学关、且这一关真有 blackwall 目标机时，才给玩家机装「神器」命令
+            BlackwallClient = index == 0 && GameState.Instance.Mode == PlayMode.Novice
+                              && _level.Track == LevelTrack.Tutorial
+                              && _level.Machines.Any(mm => mm.Blackwall),
             // 桌面上建了几扇多开终端窗，就接几根串口。两边都按
             // QemuLauncher.ExtraConsoleTtys 算，所以落在同样的 ttyS 上
             ExtraConsoles = index == 0 ? _extraTerms.Count : 0,
+            // 「神器」接入口：只在教学关生效（实战关写了也不接，见 MachineDefinition.Blackwall），
+            // 玩家自己的机器不接自己
+            Blackwall = _level.Track == LevelTrack.Tutorial && index != 0 && m.Blackwall,
             // 关卡里不写回镜像，保持基础镜像干净。
             // 真正的存档走 qcow2 backing file + user:// 下的 overlay。
             Ephemeral = m.Disk is not null,
@@ -974,7 +1075,13 @@ public partial class Level : Control
         bool ok;
         try
         {
-            ok = await SelfTest.RunAsync(this, _terminals[0], bootDetail, OpenExtraTerminalCore);
+            // 教学关里若有 blackwall 目标机，把「神器」接入也一并自检
+            string? bwIp = _blackwallByIp.Keys.FirstOrDefault();
+            Control? PeekBlackwall() =>
+                _blackwallWins.Values.FirstOrDefault(s => s.Window.Shown).Terminal;
+            ok = await SelfTest.RunAsync(this, _terminals[0], bootDetail, OpenExtraTerminalCore,
+                                         bwIp is null ? null : OpenBlackwallCore, bwIp,
+                                         bwIp is null ? null : PeekBlackwall);
         }
         catch (Exception ex)
         {

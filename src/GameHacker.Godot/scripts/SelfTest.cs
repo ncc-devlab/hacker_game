@@ -34,8 +34,14 @@ public static class SelfTest
 
     /// <summary>跑完整套检查，返回是否全绿。</summary>
     /// <param name="openExtraTerminal">桌面上双击「终端」图标会做的事。返回开出来的终端节点。</param>
+    /// <param name="openBlackwall">「神器」接进某个 IP 会做的事（教学关才有）。返回接进去的终端节点。</param>
+    /// <param name="blackwallIp">拿来测 blackwall 的目标 IP。</param>
+    /// <param name="peekBlackwall">当前正显示的 blackwall 直连窗的终端，没有则 null。用来验玩家敲命令后弹窗。</param>
     public static async Task<bool> RunAsync(Node host, Control terminal, string bootDetail,
-                                            Func<Control?>? openExtraTerminal = null)
+                                            Func<Control?>? openExtraTerminal = null,
+                                            Func<string, Control?>? openBlackwall = null,
+                                            string? blackwallIp = null,
+                                            Func<Control?>? peekBlackwall = null)
     {
         Results.Clear();
         Check("虚拟机启动并互通", bootDetail.Contains("互通"), bootDetail);
@@ -128,6 +134,72 @@ public static class SelfTest
                 (walk as GameWindow)?.Close();
                 terminal.GrabFocus();
                 await host.ToSignal(host.GetTree(), SceneTree.SignalName.ProcessFrame);
+            }
+        }
+
+        // --- 「神器」blackwall：给个 IP 直接接进目标机（教学关专属上帝模式）------
+        // 走的是目标机上常驻的 getty -n -l /bin/sh，是真 pty；这里验的是「接得进去、
+        // 敲得进字、回显的是目标机那个预留的 ttyS」。目标机没开接入口就跳过
+        if (openBlackwall is not null && blackwallIp is not null)
+        {
+            var bw = openBlackwall(blackwallIp);
+            if (bw is null)
+                Check("神器接进目标机", false, $"接不进 {blackwallIp}");
+            else
+            {
+                await Task.Delay(1500);   // 等它补敲的那一下回车换回提示符
+                bw.GrabFocus();
+                await host.ToSignal(host.GetTree(), SceneTree.SignalName.ProcessFrame);
+                string tty = await CaptureAsync(host, bw, "echo BW-$(tty)");
+                Check("神器接进的终端能输入并回显", tty.StartsWith("BW-/dev/ttyS"),
+                      $"{tty} | focus={bw.HasFocus()} | {Tail(ScreenText(bw))}");
+
+                // 关回去，焦点还给主终端
+                Node walk = bw;
+                while (walk is not null && walk is not GameWindow) walk = walk.GetParent();
+                (walk as GameWindow)?.Close();
+                terminal.GrabFocus();
+                await host.ToSignal(host.GetTree(), SceneTree.SignalName.ProcessFrame);
+            }
+        }
+
+        // --- 玩家真实路径：在自己终端敲 blackwall <ip>，走私有通道把窗开出来 -----
+        // 上面那条是 host 侧直接开窗；这条验的是完整回路：玩家机上的 blackwall 脚本
+        // 往 ttyS1 递 reach 事件 -> 宿主 ControlChannel 解析 -> 开窗。命令只在新手模式装，
+        // 没装（非新手）就跳过
+        if (peekBlackwall is not null && blackwallIp is not null)
+        {
+            terminal.GrabFocus();
+            await host.ToSignal(host.GetTree(), SceneTree.SignalName.ProcessFrame);
+            string has = await CaptureAsync(host, terminal, "command -v blackwall || echo NO-BW");
+            if (has.Contains("NO-BW"))
+                Check("blackwall 命令随新手工具装上", false, $"web01 上没有 blackwall 命令 | {Tail(has)}");
+            else
+            {
+                await TypeAsync(host, $"blackwall {blackwallIp}\n");
+                // 等 reach 事件把窗开出来
+                Control? win = null;
+                for (int i = 0; i < 40 && win is null; i++)
+                {
+                    await Task.Delay(200);
+                    win = peekBlackwall();
+                }
+                if (win is null)
+                    Check("blackwall 命令经私有通道开出会话", false, "敲了命令但没弹出直连窗");
+                else
+                {
+                    await Task.Delay(1200);
+                    win.GrabFocus();
+                    await host.ToSignal(host.GetTree(), SceneTree.SignalName.ProcessFrame);
+                    string tty = await CaptureAsync(host, win, "echo BWCMD-$(tty)");
+                    Check("blackwall 命令经私有通道开出会话", tty.StartsWith("BWCMD-/dev/ttyS"),
+                          $"{tty} | {Tail(ScreenText(win))}");
+                    Node w2 = win;
+                    while (w2 is not null && w2 is not GameWindow) w2 = w2.GetParent();
+                    (w2 as GameWindow)?.Close();
+                    terminal.GrabFocus();
+                    await host.ToSignal(host.GetTree(), SceneTree.SignalName.ProcessFrame);
+                }
             }
         }
 
