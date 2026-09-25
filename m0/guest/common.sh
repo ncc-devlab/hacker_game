@@ -63,14 +63,23 @@ m0_place_content() {
 # resize 必须走这里 —— 裸串口不是 PTY，没有 TIOCSWINSZ 带外信令。
 m0_start_agent() {
     [ -c /dev/ttyS1 ] || return 0
+    # 玩家机上多开的终端（桌面上「终端」图标开出来的那几扇窗），如 ttyS2,ttyS3。
+    # 必须在这里读：m0_disguise 之后 /proc/cmdline 就是伪造的那份了
+    M0_CONSOLES="$(m0_cmdline_get m0.consoles)"
     stty -F /dev/ttyS1 raw -echo 2>/dev/null
     echo "{\"ev\":\"ready\",\"host\":\"$M0_HOST\",\"ip\":\"$M0_IP\"}" > /dev/ttyS1
     (
         while read -r line < /dev/ttyS1; do
             case "$line" in
+                # resize 行数 列数 [终端]：不给终端就是 ttyS0。只认玩家自己的那几个终端
                 resize\ *) set -- $line
-                           stty -F /dev/ttyS0 rows "$2" cols "$3" 2>/dev/null
-                           echo "{\"ev\":\"resize\",\"rows\":$2,\"cols\":$3}" > /dev/ttyS1 ;;
+                           _tty="${4:-ttyS0}"
+                           m0_is_player_tty "$_tty" && stty -F "/dev/$_tty" rows "$2" cols "$3" 2>/dev/null
+                           echo "{\"ev\":\"resize\",\"rows\":$2,\"cols\":$3,\"tty\":\"$_tty\"}" > /dev/ttyS1 ;;
+                # 玩家关掉了一扇多开的终端：把那上面的会话挂断，getty 会重开一个干净的
+                hangup\ *) set -- $line
+                           case ",$M0_CONSOLES," in *",$2,"*) m0_hangup "$2" ;; esac
+                           echo "{\"ev\":\"hangup\",\"tty\":\"$2\"}" > /dev/ttyS1 ;;
                 ping\ *)   set -- $line
                            if ping -c1 -W2 "$2" >/dev/null 2>&1; then R=ok; else R=fail; fi
                            echo "{\"ev\":\"ping\",\"target\":\"$2\",\"result\":\"$R\"}" > /dev/ttyS1 ;;
@@ -483,7 +492,41 @@ m0_banner() {
 # getty 而不是直接 exec sh：它给出真正的控制终端（job control）并设好 TERM，
 # 这是 tmux/vim 正常工作的前提。外层 while 循环 respawn ——
 # 玩家在游戏里敲 exit 不能让整台虚拟机 panic。
+# 这个终端是不是玩家自己的：主控制台 ttyS0，或者多开的那几个
+m0_is_player_tty() {
+    [ "$1" = ttyS0 ] && return 0
+    case ",$M0_CONSOLES," in *",$1,"*) return 0 ;; esac
+    return 1
+}
+
+# 挂断一个终端上的会话：谁的标准输入输出还连着它就杀谁。
+# 不用 fuser：两种客户机的 busybox 不保证都带它，/proc 总是在的
+m0_hangup() {
+    for _p in /proc/[0-9]*; do
+        for _fd in 0 1 2; do
+            if [ "$(readlink "$_p/fd/$_fd" 2>/dev/null)" = "/dev/$1" ]; then
+                kill -KILL "${_p#/proc/}" 2>/dev/null
+                break
+            fi
+        done
+    done
+}
+
+# 多开的终端：和 ttyS0 一样是 getty 起的 shell，一样循环重开。
+# 串口是真的 COM3/COM4，玩家 who / ps 里看到的就是 ttyS2、ttyS3 —— 和真机上接了
+# 几根串口线没有两样，不多出任何一眼就是虚拟机的设备
+m0_start_extra_consoles() {
+    for _t in $(echo "$M0_CONSOLES" | tr ',' ' '); do
+        [ -c "/dev/$_t" ] || continue
+        ( while : ; do
+            setsid getty -n -l /bin/sh 115200 "$_t" xterm-256color >/dev/null 2>&1
+            sleep 1
+          done ) &
+    done
+}
+
 m0_console_loop() {
+    m0_start_extra_consoles
     # 告诉宿主：玩家终端这边的 shell 起来了，现在敲进来的字才有人读。
     # ready 信标只说明 ttyS1 的代理起来了，那比这里早好几秒 —— 自检和截图
     # 在这中间敲命令的话，字会送进一个还没人读的串口，直接丢掉。

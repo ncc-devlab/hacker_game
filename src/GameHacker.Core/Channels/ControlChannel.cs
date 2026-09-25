@@ -211,7 +211,28 @@ public sealed class ControlChannel : IAsyncDisposable
 
     /// <summary>把终端尺寸转发给客户机。裸串口没有 TIOCSWINSZ，只能走这里。</summary>
     public Task<JsonObject> ResizeAsync(int rows, int columns, CancellationToken cancellationToken = default) =>
-        RequestAsync($"resize {rows} {columns}", "resize", TimeSpan.FromSeconds(15), cancellationToken);
+        ResizeAsync("ttyS0", rows, columns, cancellationToken);
+
+    /// <summary>
+    /// 同上，但指定是哪个终端（多开的终端在 ttyS2 / ttyS3 上）。
+    /// </summary>
+    /// <remarks>
+    /// 按终端认领答复：几扇终端窗一起变尺寸时（比如游戏窗口整个拉大），
+    /// 不这么认的话会领到别的终端那条 resize 的回音。
+    /// 老镜像的答复里没有 tty 字段，那只可能是 ttyS0 的。
+    /// </remarks>
+    public Task<JsonObject> ResizeAsync(string tty, int rows, int columns, CancellationToken cancellationToken = default) =>
+        RequestAsync(tty == "ttyS0" ? $"resize {rows} {columns}" : $"resize {rows} {columns} {tty}",
+                     "resize", TimeSpan.FromSeconds(15), cancellationToken,
+                     ev => (ev["tty"]?.GetValue<string>() ?? "ttyS0") == tty);
+
+    /// <summary>
+    /// 挂断一个多开终端上的会话（玩家关了那扇窗）。客户机那边 getty 会重开一个干净的 shell。
+    /// </summary>
+    /// <remarks>客户机只认它自己开出来的那几个多开终端，挂不断 ttyS0，更挂不断管理员的 ttyS2。</remarks>
+    public Task<JsonObject> HangupAsync(string tty, CancellationToken cancellationToken = default) =>
+        RequestAsync($"hangup {tty}", "hangup", TimeSpan.FromSeconds(15), cancellationToken,
+                     ev => ev["tty"]?.GetValue<string>() == tty);
 
     /// <summary>
     /// 问客户机一项内部状态，返回原样文本。

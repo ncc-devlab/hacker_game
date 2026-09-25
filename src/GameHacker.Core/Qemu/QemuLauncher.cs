@@ -66,7 +66,21 @@ public sealed record VmSpec
     /// <c>cat</c> 得出来 —— 看懂了它敲的那几条命令，下次就不需要它了。
     /// </remarks>
     public bool Tools { get; init; }
+
+    /// <summary>
+    /// 玩家想在这台机器上多开几个终端（桌面上的「终端」图标）。
+    /// </summary>
+    /// <remarks>
+    /// 每个多开的终端是一个真的 ISA 串口（COM3 / COM4）上的 getty，不是 virtio 设备 ——
+    /// virtio 的 PCI ID 是 Red Hat 的，<c>lspci</c> 一眼就穿帮。ISA 串口一台机器只有四个，
+    /// 前两个是玩家终端和控制通道，管理员要占一个，所以实际能开几个见
+    /// <see cref="QemuLauncher.ExtraConsoleTtys(bool, int)"/>。
+    /// </remarks>
+    public int ExtraConsoles { get; init; }
 }
+
+/// <summary>多开的一个终端：客户机里的设备名（如 <c>ttyS3</c>）和宿主这头的通道。</summary>
+public sealed record ExtraConsole(string Tty, SerialChannel Channel);
 
 /// <summary>
 /// 开机时写进客户机的一个文件。
@@ -137,6 +151,23 @@ public sealed class QemuLauncher : IAsyncDisposable, IDisposable
     /// <summary>一台机器最多几块网卡。客户机 init 只认到 eth3。</summary>
     public const int MaxNics = 4;
 
+    /// <summary>ISA 串口的个数（ttyS0..ttyS3）。QEMU 和 Linux 的 8250 驱动默认都只认这么多。</summary>
+    public const int SerialPorts = 4;
+
+    /// <summary>
+    /// 多开的终端会落在哪几个串口上。ttyS0 是玩家终端、ttyS1 是控制通道、
+    /// 有管理员的话 ttyS2 是他的，剩下的按顺序给多开的终端。
+    /// </summary>
+    public static IReadOnlyList<string> ExtraConsoleTtys(bool hasAdmin, int wanted)
+    {
+        int first = hasAdmin ? 3 : 2;
+        int count = Math.Clamp(wanted, 0, SerialPorts - first);
+        return Enumerable.Range(first, count).Select(i => $"ttyS{i}").ToList();
+    }
+
+    public static IReadOnlyList<string> ExtraConsoleTtys(VmSpec spec) =>
+        ExtraConsoleTtys(spec.Admin is not null, spec.ExtraConsoles);
+
     /// <summary>等 QEMU 自己退出多久，超时就强杀。实测本机一台约 30ms。</summary>
     public static readonly TimeSpan QuitGrace = TimeSpan.FromMilliseconds(1500);
 
@@ -176,10 +207,13 @@ public sealed class QemuLauncher : IAsyncDisposable, IDisposable
 
     /// <summary>管理员的登录终端（ttyS2）。<see cref="VmSpec.Admin"/> 为空时不开。</summary>
     public SerialChannel? Admin { get; private set; }
+
+    /// <summary>多开的终端。<see cref="VmSpec.ExtraConsoles"/> 为 0 时是空的。</summary>
+    public IReadOnlyList<ExtraConsole> Extras { get; private set; } = [];
     public int QmpPort { get; private set; }
 
     public IReadOnlyList<string> BuildArguments(VmSpec spec, int consolePort, int controlPort, int qmpPort,
-                                               int adminPort = 0)
+                                               int adminPort = 0, IReadOnlyList<int>? extraPorts = null)
     {
         string chardev(string id, int port) =>
             $"socket,id={id},host=127.0.0.1,port={port},server=off,reconnect-ms=1000";
@@ -208,6 +242,11 @@ public sealed class QemuLauncher : IAsyncDisposable, IDisposable
         string accessArg = spec.Access is not { } access ? ""
             : $" m0.access={access.Port}:{access.User}:{access.Password}:{(access.Sudo ? 1 : 0)}";
         string toolsArg = spec.Tools ? " m0.tools=1" : "";
+        var extraTtys = ExtraConsoleTtys(spec);
+        extraPorts ??= [];
+        if (extraPorts.Count != extraTtys.Count)
+            throw new ArgumentException($"多开终端要 {extraTtys.Count} 个端口，给了 {extraPorts.Count} 个", nameof(extraPorts));
+        string consolesArg = extraTtys.Count == 0 ? "" : $" m0.consoles={string.Join(',', extraTtys)}";
         if (spec.Access?.Password.Contains(':') is true)
             throw new ArgumentException("维护口的口令不能带冒号，cmdline 上这几段是用冒号分的", nameof(spec));
 
@@ -221,7 +260,7 @@ public sealed class QemuLauncher : IAsyncDisposable, IDisposable
             "-initrd", spec.InitrdPath,
             "-append", $"console=ttyS0 quiet loglevel=3 tsc=unstable "
                        + $"m0.host={spec.Name}{ipArg}{gatewayArg}{rootArg}{personaArg}{adminArg}"
-                       + $"{fileArg}{serviceArg}{accessArg}{toolsArg}",
+                       + $"{fileArg}{serviceArg}{accessArg}{toolsArg}{consolesArg}",
             "-chardev", chardev("con", consolePort), "-serial", "chardev:con",
             "-chardev", chardev("ctl", controlPort), "-serial", "chardev:ctl",
             "-qmp", $"tcp:127.0.0.1:{qmpPort},server=on,wait=off",
@@ -235,6 +274,16 @@ public sealed class QemuLauncher : IAsyncDisposable, IDisposable
             args.Add(chardev("adm", adminPort));
             args.Add("-serial");
             args.Add("chardev:adm");
+        }
+
+        // 多开的终端接在后面的串口上。-serial 按出现顺序编号，所以这里的顺序
+        // 就是 ExtraConsoleTtys 算出来的 ttyS 编号
+        for (int i = 0; i < extraPorts.Count; i++)
+        {
+            args.Add("-chardev");
+            args.Add(chardev($"x{i}", extraPorts[i]));
+            args.Add("-serial");
+            args.Add($"chardev:x{i}");
         }
 
         for (int i = 0; i < spec.Nics.Count; i++)
@@ -278,6 +327,7 @@ public sealed class QemuLauncher : IAsyncDisposable, IDisposable
         Console = new SerialChannel();
         Control = new SerialChannel();
         Admin = spec.Admin is null ? null : new SerialChannel();
+        Extras = ExtraConsoleTtys(spec).Select(tty => new ExtraConsole(tty, new SerialChannel())).ToList();
         QmpPort = FreeTcpPort();
 
         var startInfo = new ProcessStartInfo(_qemuPath)
@@ -286,7 +336,8 @@ public sealed class QemuLauncher : IAsyncDisposable, IDisposable
             RedirectStandardError = true,
             UseShellExecute = false,
         };
-        var args = BuildArguments(spec, Console.Port, Control.Port, QmpPort, Admin?.Port ?? 0);
+        var args = BuildArguments(spec, Console.Port, Control.Port, QmpPort, Admin?.Port ?? 0,
+                                  Extras.Select(x => x.Channel.Port).ToList());
         foreach (var arg in args)
             startInfo.ArgumentList.Add(arg);
         CommandLine = _qemuPath + " " + string.Join(' ', args.Select(Quote));
@@ -385,6 +436,7 @@ public sealed class QemuLauncher : IAsyncDisposable, IDisposable
         if (Console is not null) await Console.DisposeAsync().ConfigureAwait(false);
         if (Control is not null) await Control.DisposeAsync().ConfigureAwait(false);
         if (Admin is not null) await Admin.DisposeAsync().ConfigureAwait(false);
+        foreach (var extra in Extras) await extra.Channel.DisposeAsync().ConfigureAwait(false);
     }
 
     /// <summary>
@@ -403,6 +455,7 @@ public sealed class QemuLauncher : IAsyncDisposable, IDisposable
         Console?.DisposeAsync().AsTask().Wait(2000);
         Control?.DisposeAsync().AsTask().Wait(2000);
         Admin?.DisposeAsync().AsTask().Wait(2000);
+        foreach (var extra in Extras) extra.Channel.DisposeAsync().AsTask().Wait(2000);
     }
 
     private void KillProcess()
