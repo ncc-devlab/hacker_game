@@ -321,7 +321,7 @@ public partial class Level : Control
     /// 玩家机上的 <c>blackwall &lt;ip&gt;</c> 脚本往自己的 ttyS1 写一行
     /// <c>{"ev":"reach","ip":..}</c>，宿主的 <see cref="ControlChannel"/> 解析出来经
     /// <see cref="ControlChannel.EventPublished"/> 到这里。这是唯一一处「客户机主动请宿主办事」，
-    /// 靠教学关专属兜住（见 <see cref="NewSpec"/> 的 Blackwall 门槛）。
+    /// 靠关卡逐关点名兜住（见 <see cref="LevelDefinition.Blackwall"/>）。
     /// </remarks>
     private void RegisterBlackwall()
     {
@@ -761,16 +761,14 @@ public partial class Level : Control
             // 新手模式给玩家自己的机器装一套工具。它们不做玩家做不到的事，
             // 只是把那几条命令替他跑一遍并打出来 —— 而且都是 cat 得出来的脚本
             Tools = index == 0 && GameState.Instance.Mode == PlayMode.Novice,
-            // 只有教学关、且这一关真有 blackwall 目标机时，才给玩家机装「神器」命令
-            BlackwallClient = index == 0 && GameState.Instance.Mode == PlayMode.Novice
-                              && _level.Track == LevelTrack.Tutorial
-                              && _level.Machines.Any(mm => mm.Blackwall),
+            // 「神器」只在关卡点名放出来的那几关有（新手关只在新手模式），平时调不出来
+            BlackwallClient = index == 0 && _level.BlackwallEnabled(GameState.Instance.Mode),
             // 桌面上建了几扇多开终端窗，就接几根串口。两边都按
             // QemuLauncher.ExtraConsoleTtys 算，所以落在同样的 ttyS 上
             ExtraConsoles = index == 0 ? _extraTerms.Count : 0,
-            // 「神器」接入口：只在教学关生效（实战关写了也不接，见 MachineDefinition.Blackwall），
+            // 「神器」接入口：这一局没放出神器的话目标机也不留那个 root shell，
             // 玩家自己的机器不接自己
-            Blackwall = _level.Track == LevelTrack.Tutorial && index != 0 && m.Blackwall,
+            Blackwall = _level.BlackwallEnabled(GameState.Instance.Mode) && index != 0 && m.Blackwall,
             // 关卡里不写回镜像，保持基础镜像干净。
             // 真正的存档走 qcow2 backing file + user:// 下的 overlay。
             Ephemeral = m.Disk is not null,

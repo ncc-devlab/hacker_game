@@ -4,6 +4,9 @@
   "title": "联网实验场",
   "track": "tutorial",
   "order": 0,
+  // 这一关放出「神器」blackwall，只给新手模式（"story" 是剧情关用的：任何模式都给）。
+  // 不写就是没有 —— 平时调不出来
+  "blackwall": "novice",
   "summary": "两台机器接上同一台交换机，互相 ping 通。",
   "briefing": "web01 是你的工作站，backup 是机房角落里的一台老服务器。它们接在同一台交换机上，IP 已经配好。\n\n确认两台机器之间网络是通的。可以在任意一边的终端里敲 ping，看看下方的抓包面板里出现了什么。",
   "networks": [
@@ -13,8 +16,8 @@
     { "name": "web01",  "nics": [ { "network": "lan", "ip": "10.0.0.1" } ], "persona": "workstation", "disk": "alpine-main", "memory": 512 },
     // 教学关：backup 的终端也白送。实战关里别人的机器是要打进去的（见 jump-scan 的 access），
     // 这一关只讲「两台机器怎么算通」，把登录那一层摆进来只会挡住要讲的东西
-    // blackwall: 新手模式下玩家在 web01 上敲 blackwall 10.0.0.2 就能直接接进 backup
-    //（教学专用「神器」，见 MachineDefinition.Blackwall）。这一关也顺带自检这条路。
+    // blackwall: true —— 神器能接进这台：新手模式下玩家在 web01 上敲 blackwall 10.0.0.2
+    // 就直接接进 backup（见 MachineDefinition.Blackwall）。这一关也顺带自检这条路。
     { "name": "backup", "nics": [ { "network": "lan", "ip": "10.0.0.2" } ], "persona": "legacy-server",
       "shell": true, "blackwall": true }
   ],

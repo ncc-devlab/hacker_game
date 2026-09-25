@@ -40,7 +40,9 @@ public partial class GameState : Node
     /// 游玩模式（新手 / 高级 / 专家）。全局选一次；来查岗的管理员有多专业跟着它和关卡走，
     /// 见 <see cref="GameHacker.Core.Admin.AdminSkillOdds"/>。
     /// </summary>
-    public PlayMode Mode => Progress.Mode;
+    public PlayMode Mode =>
+        Enum.TryParse<PlayMode>(System.Environment.GetEnvironmentVariable("GAMEHACKER_MODE"), ignoreCase: true, out var m)
+            ? m : Progress.Mode;
 
     /// <summary>
     /// 开发用：<c>GAMEHACKER_ADMIN_SKILL=junior|regular|senior</c> 指定来的是哪一档管理员，

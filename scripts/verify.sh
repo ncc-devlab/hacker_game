@@ -381,6 +381,8 @@ else
         export GAMEHACKER_BOOT_TIMEOUT="$BOOT_TIMEOUT"
         export GAMEHACKER_SELFTEST="$OUT/selftest.txt"
         export GAMEHACKER_PCAP="$OUT/capture.pcap"
+        # 新手模式：教学关才装新手工具（含神器 blackwall），自检要走到那条路
+        export GAMEHACKER_MODE=Novice
         # 顺带验玩家的真实路径：鼠标点击聚焦终端后，Tab 补全与方向键都要能用
         export GAMEHACKER_PROBE_CLICK=1
         WATCH='台机器就绪'
@@ -407,7 +409,7 @@ else
         # Apple Silicon 上 x86_64 客户机只有纯 TCG，启动耗时是三端承诺的直接风险，单独记一笔
         [ -n "$WATCH_AT" ] && echo "  两台虚拟机就绪用时: ${WATCH_AT}s（进程启动起算，含 Godot 自身启动）" \
             | tee -a "$OUT/environment.txt"
-        unset GAMEHACKER_SELFTEST GAMEHACKER_PCAP GAMEHACKER_PROBE_CLICK
+        unset GAMEHACKER_SELFTEST GAMEHACKER_PCAP GAMEHACKER_PROBE_CLICK GAMEHACKER_MODE
     fi
 
     # Godot 自己的日志（user://logs）一并带走
