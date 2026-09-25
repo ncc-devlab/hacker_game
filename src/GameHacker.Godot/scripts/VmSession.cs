@@ -21,7 +21,8 @@ public sealed class VmSession : IAsyncDisposable, IDisposable
     private readonly CancellationTokenSource _cts = new();
     private Task? _pump;
 
-    public VmSession(VmSpec spec, Control terminal, Node bridgeParent)
+    /// <param name="extraTerminals">多开的终端节点，按 <see cref="QemuLauncher.ExtraConsoleTtys(VmSpec)"/> 的顺序。</param>
+    public VmSession(VmSpec spec, Control terminal, Node bridgeParent, IReadOnlyList<Control>? extraTerminals = null)
     {
         Spec = spec;
         _launcher = new QemuLauncher(GamePaths.QemuPath);
@@ -33,6 +34,18 @@ public sealed class VmSession : IAsyncDisposable, IDisposable
         bridgeParent.AddChild(Bridge);
         Bridge.Attach(terminal, _launcher.Console!, Control);
 
+        // 多开的终端开机时就接好：窗口还没打开，getty 已经在那头等着了
+        var extras = new List<TerminalBridge>();
+        for (int i = 0; i < _launcher.Extras.Count && i < (extraTerminals?.Count ?? 0); i++)
+        {
+            var extra = _launcher.Extras[i];
+            var bridge = new TerminalBridge { Name = $"Bridge_{spec.Name}_{extra.Tty}" };
+            bridgeParent.AddChild(bridge);
+            bridge.Attach(extraTerminals![i], extra.Channel, Control, extra.Tty);
+            extras.Add(bridge);
+        }
+        ExtraBridges = extras;
+
         // 各条通道的接收循环。监听口在 Start() 里就已经开好了，
         // 所以客户机开机的第一个字节也不会丢。
         var pumps = new List<Task>
@@ -41,6 +54,7 @@ public sealed class VmSession : IAsyncDisposable, IDisposable
             _launcher.Control!.RunAsync(_cts.Token),
         };
         if (_launcher.Admin is not null) pumps.Add(_launcher.Admin.RunAsync(_cts.Token));
+        foreach (var extra in _launcher.Extras) pumps.Add(extra.Channel.RunAsync(_cts.Token));
         _pump = Task.WhenAll(pumps);
     }
 
@@ -60,6 +74,9 @@ public sealed class VmSession : IAsyncDisposable, IDisposable
     /// <summary>管理员的登录终端（ttyS2）。这台机器没有管理员时为 <c>null</c>。</summary>
     public SerialChannel? AdminTty => _launcher.Admin;
     public TerminalBridge Bridge { get; }
+
+    /// <summary>多开终端的桥接，和传进来的终端节点一一对应。</summary>
+    public IReadOnlyList<TerminalBridge> ExtraBridges { get; }
 
     /// <summary>
     /// 等客户机 init 发出 ready 信标。发任何控制命令之前必须先等到它 ——

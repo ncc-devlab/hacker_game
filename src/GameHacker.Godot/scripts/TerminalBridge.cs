@@ -27,6 +27,7 @@ public sealed partial class TerminalBridge : Node
     private Control _terminal = null!;
     private SerialChannel _serial = null!;
     private ControlChannel? _control;
+    private string _tty = "ttyS0";
     private Vector2I _lastSize = Vector2I.Zero;
 
     /// <summary>客户机 ready 之前攒着的最新尺寸，ready 后补发一次。只在主线程读写。</summary>
@@ -39,11 +40,15 @@ public sealed partial class TerminalBridge : Node
     /// <summary>玩家在这个终端里按下了回车。</summary>
     public event Action? PlayerSubmitted;
 
-    public void Attach(Control terminal, SerialChannel serial, ControlChannel? control = null)
+    /// <summary>这个终端在客户机里是哪个设备。主终端是 ttyS0，多开的是 ttyS2 / ttyS3。</summary>
+    public string Tty => _tty;
+
+    public void Attach(Control terminal, SerialChannel serial, ControlChannel? control = null, string tty = "ttyS0")
     {
         _terminal = terminal;
         _serial = serial;
         _control = control;
+        _tty = tty;
 
         _serial.DataReceived += OnSerialData;
         _terminal.Connect("data_sent", Callable.From<byte[]>(OnTerminalData));
@@ -118,13 +123,49 @@ public sealed partial class TerminalBridge : Node
     {
         try
         {
-            await _control!.ResizeAsync(rows, cols);
+            await _control!.ResizeAsync(_tty, rows, cols);
             Callable.From(() => Resized?.Invoke(rows, cols)).CallDeferred();
         }
         catch (Exception ex)
         {
             GD.PushWarning($"resize 下发失败 ({rows}x{cols}): {ex.Message}");
         }
+    }
+
+    /// <summary>
+    /// 窗口关了：清屏，并让客户机挂断这个终端上的会话。下次打开是一个全新的 shell。
+    /// </summary>
+    public void HangUp()
+    {
+        ResetScreen();
+        if (_control is not null && _guestReady) _ = HangUpAsync(_control);
+    }
+
+    /// <summary>把终端整个复位（RIS），屏幕和回滚都清掉。只动宿主这头，客户机不知道。</summary>
+    public void ResetScreen()
+    {
+        while (_inbound.TryDequeue(out _)) { }
+        _terminal.Call("write", "\u001bc");
+    }
+
+    /// <summary>替玩家敲一下回车，让 shell 重新打一行提示符。不算玩家提交了命令。</summary>
+    public void Poke() => _ = _serial.SendAsync("\r"u8.ToArray());
+
+    private async System.Threading.Tasks.Task HangUpAsync(ControlChannel control)
+    {
+        try { await control.HangupAsync(_tty); }
+        catch (Exception ex) { GD.PushWarning($"挂断 {_tty} 失败: {ex.Message}"); }
+    }
+
+    /// <summary>
+    /// 把尺寸再告诉客户机一遍。挂断之后 getty 重开的是一个新会话，
+    /// 串口上原来 stty 设的行列数已经跟着上一个会话没了。
+    /// </summary>
+    public void ResendSize()
+    {
+        var size = _lastSize;
+        _lastSize = Vector2I.Zero;
+        if (size != Vector2I.Zero) OnTerminalResized(size);
     }
 
     public override void _ExitTree()
