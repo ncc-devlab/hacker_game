@@ -307,6 +307,22 @@ echo
 echo "看懂它敲的命令，你自己也敲得出来 —— 那时就不再需要它。这是新手模式的出口。"
 TOOLS
 
+    # 「神器」blackwall：只有教学关且这一关有接入目标时才装（m0.blackwall_tool=1）。
+    # 它做的只有一件事：往隐藏控制通道递一句「接我到这个 IP」。实战关没有这条通道，
+    # 这也是它只存在于教学关的原因 —— 读一遍脚本就明白它凭什么这么神，然后就该放下它。
+    if [ "$(m0_cmdline_get m0.blackwall_tool)" = "1" ]; then
+        cat > /usr/local/bin/blackwall <<'BLACKWALL'
+#!/bin/sh
+# 教学专用：给个 IP，桌面上直接弹出一扇直连那台机器的 root 终端（真 pty）。
+# 手法：往控制通道 ttyS1 递一行 reach 事件，接线由外面完成。
+[ -n "$1" ] || { echo "用法: blackwall <ip>"; echo "例:   blackwall 10.0.0.2"; exit 1; }
+[ -c /dev/ttyS1 ] || { echo "这台机器上没有那条通道，神器用不了。"; exit 1; }
+echo "{\"ev\":\"reach\",\"ip\":\"$1\"}" > /dev/ttyS1
+echo "已请求接入 $1 —— 稍等，桌面上会弹出一扇直连它的终端。"
+BLACKWALL
+        chmod 0755 /usr/local/bin/blackwall
+    fi
+
     cat > /usr/local/bin/mktunnel <<'MKTUNNEL'
 #!/bin/sh
 # 经跳板机把某个网段接过来。手敲的话就是下面这三件事：
