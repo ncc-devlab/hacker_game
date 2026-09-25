@@ -12,6 +12,20 @@ public enum LevelTrack
 }
 
 /// <summary>关卡的制作进度。草稿关可以没有检测，只在编辑器里能进。</summary>
+/// <summary>
+/// 「神器」（blackwall）在这一关放不放出来。默认 <see cref="Off"/>：平时根本调不出来，
+/// 只有关卡作者逐关点名的新手关和特殊剧情关才有。
+/// </summary>
+public enum BlackwallMode
+{
+    /// <summary>没有神器。绝大多数关卡都是这样。</summary>
+    Off,
+    /// <summary>新手关：只在新手模式下给玩家机装 <c>blackwall</c> 命令。</summary>
+    Novice,
+    /// <summary>特殊剧情关：剧情把它交到玩家手上，任何模式都有。</summary>
+    Story,
+}
+
 public enum LevelStatus
 {
     Playable,
@@ -66,6 +80,20 @@ public sealed record LevelDefinition
     /// 这一关有没有管理员会来查岗。给了的话，他那台机器会多一个登录终端。
     /// </summary>
     public AdminDefinition? Admin { get; init; }
+
+    /// <summary>
+    /// 这一关放不放出「神器」。能被它接进去的机器另在机器上写
+    /// <see cref="MachineDefinition.Blackwall"/>，两处都写了才生效。
+    /// </summary>
+    public BlackwallMode Blackwall { get; init; } = BlackwallMode.Off;
+
+    /// <summary>按玩家的游玩模式，这一局神器在不在。</summary>
+    public bool BlackwallEnabled(PlayMode mode) => Blackwall switch
+    {
+        BlackwallMode.Novice => mode == PlayMode.Novice,
+        BlackwallMode.Story => true,
+        _ => false,
+    };
 }
 
 /// <summary>一个网段。</summary>
@@ -135,11 +163,11 @@ public sealed record MachineDefinition
     /// 直连它的 root 终端，不用登录、不用打进去。
     /// </summary>
     /// <remarks>
-    /// <para><b>这是新手教学关专属的上帝模式</b>，明摆着违背 <see cref="Access"/> 那套
+    /// <para><b>这是上帝模式</b>，明摆着违背 <see cref="Access"/> 那套
     /// 「别人的机器要打进去」的规矩 —— 它存在的意义就是让新手先看见一个能用的会话
-    /// （真 pty，Tab/方向键都在），再去学怎么自己挣到它。所以只在教学关（
-    /// <see cref="LevelTrack.Tutorial"/>）生效，实战关里写了也会被忽略；玩家机上的
-    /// <c>blackwall</c> 命令也只在新手模式随工具箱装（见 <c>m0_install_tools</c>）。</para>
+    /// （真 pty，Tab/方向键都在），再去学怎么自己挣到它。所以平时调不出来：关卡本身还得
+    /// 写 <see cref="LevelDefinition.Blackwall"/>（新手关 / 特殊剧情关逐关点名），
+    /// 否则校验直接拦下。</para>
     /// <para>机制上：给这台机器预留一个 ISA 串口，上面常驻一个 <c>getty -n -l /bin/sh</c>
     /// 的 root shell（和玩家机多开终端同一套），玩家 <c>blackwall &lt;ip&gt;</c> 时宿主把它
     /// 桥接成桌面上一扇新窗。默认 <b>关</b> —— 这就是「配置某些机器不可如此连接」。</para>

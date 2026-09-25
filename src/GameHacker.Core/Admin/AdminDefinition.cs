@@ -96,6 +96,13 @@ public sealed record AdminAllow
     /// <summary>本来就该有人登录的终端，如 <c>ttyS2</c>（管理员自己）。</summary>
     public IReadOnlyList<string> Sessions { get; init; } = [];
 
+    /// <summary>
+    /// 这些账号登录本身不算痕迹，连它整条会话上的进程一起放过（终端号、进程都不举报）。
+    /// 维护口那个账号就在这里 —— 玩家从维护口进来干活正是那个口的用途，暴露他的是
+    /// 留下的东西（转发没关、工具没删），不是「他登录了」。加载关卡时按维护口自动补上。
+    /// </summary>
+    public IReadOnlyList<string> SessionUsers { get; init; } = [];
+
     /// <summary>该一直跑着的服务。不在了同样可疑 —— 玩家可能为了清静把它杀了。</summary>
     public IReadOnlyList<string> Services { get; init; } = [];
 

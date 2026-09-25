@@ -253,13 +253,66 @@ public class LevelNetworkTests
         var allow = level.Admin!.Allow;
         Assert.Contains("nc -lk -p 2222 *", allow.Processes);
         Assert.Contains("nc -lk -p 9000 *", allow.Processes);
-        Assert.Contains("sh +m -i", allow.Processes);          // 经维护口登录进来的那个 shell
+        Assert.Contains("script -q -E never *", allow.Processes);  // 服务端开 pty 的 script（root，无终端）
+        Assert.Contains("svc-backup", allow.SessionUsers);         // 从维护口登录进来的会话本身不算痕迹
         Assert.Contains("tcp/2222", allow.Ports);
         Assert.Contains("tcp/9000", allow.Ports);
 
-        // 真拿这份白名单去看那几个进程，它们都得放行
+        // 真拿这份白名单去看进程：维护口的监听、服务端的 script 都得放行
         var whitelist = new ProcessWhitelist(allow.Processes);
         Assert.True(whitelist.Allows(new ProcessLine(1, "root", "?", "nc -lk -p 2222 -e /usr/sbin/rlogind")));
-        Assert.True(whitelist.Allows(new ProcessLine(2, "svc-back", "?", "sh +m -i")));
+        Assert.True(whitelist.Allows(new ProcessLine(2, "root", "?", "script -q -E never -c stty... /dev/null")));
+    }
+}
+
+/// <summary>「神器」blackwall 的开关：关卡逐关点名放出来，机器上再写能不能被接。</summary>
+public class BlackwallSwitchTests
+{
+    private static string Level(string mode, bool target) => $$"""
+        { "id": "b", "title": "b", "track": "mission", "status": "draft"{{(mode == "" ? "" : $", \"blackwall\": \"{mode}\"")}},
+          "networks": [ { "name": "lan", "vlan": 1, "subnet": "10.0.0.0/24" } ],
+          "machines": [
+            { "name": "ws",  "nics": [ { "network": "lan", "ip": "10.0.0.1" } ] },
+            { "name": "srv", "nics": [ { "network": "lan", "ip": "10.0.0.2" } ]{{(target ? ", \"blackwall\": true" : "")}} } ] }
+        """;
+
+    private static LevelDefinition Parse(string json) => LevelCatalog.Parse([("b.json", json)]).Levels[0];
+
+    [Fact]
+    public void 默认没有神器()
+    {
+        var level = Parse(Level("", target: false));
+        Assert.Equal(BlackwallMode.Off, level.Blackwall);
+        Assert.All(Enum.GetValues<PlayMode>(), mode => Assert.False(level.BlackwallEnabled(mode)));
+    }
+
+    [Fact]
+    public void 新手关只给新手模式()
+    {
+        var level = Parse(Level("novice", target: true));
+        Assert.True(level.BlackwallEnabled(PlayMode.Novice));
+        Assert.False(level.BlackwallEnabled(PlayMode.Advanced));
+        Assert.False(level.BlackwallEnabled(PlayMode.Expert));
+    }
+
+    [Fact]
+    public void 剧情关任何模式都给_实战关也能点名()
+    {
+        var level = Parse(Level("story", target: true));
+        Assert.All(Enum.GetValues<PlayMode>(), mode => Assert.True(level.BlackwallEnabled(mode)));
+    }
+
+    [Fact]
+    public void 只在机器上写了而关卡没放出来就拦下()
+    {
+        var ex = Assert.Throws<LevelFormatException>(() => Parse(Level("", target: true)));
+        Assert.Contains("没放出神器", ex.Message);
+    }
+
+    [Fact]
+    public void 关卡放出来却没有可接的机器就拦下()
+    {
+        var ex = Assert.Throws<LevelFormatException>(() => Parse(Level("novice", target: false)));
+        Assert.Contains("没有一台机器", ex.Message);
     }
 }

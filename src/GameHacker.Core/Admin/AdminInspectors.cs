@@ -131,8 +131,10 @@ public sealed partial class AdminInspectors(AdminAllow allow, string machine, st
     {
         var rows = ProcessTable.Parse(output);
         var own = OwnTtys(rows);
+        var svc = ServiceTtys(rows);
         return rows
-            .Where(p => !_processes.Allows(p) && !(p.Tty != "?" && own.Contains(p.Tty)))
+            .Where(p => !_processes.Allows(p)
+                        && !(p.Tty != "?" && (own.Contains(p.Tty) || svc.Contains(p.Tty))))
             .Select(p => new AdminFinding(
                 AdminCheck.Processes, p.Command,
                 $"pid {p.Pid}  用户 {p.User}  终端 {p.TtyName}",
@@ -145,6 +147,17 @@ public sealed partial class AdminInspectors(AdminAllow allow, string machine, st
     private HashSet<string> OwnTtys(IEnumerable<ProcessLine> rows) =>
         rows.Where(p => p.User == adminUser && p.Tty != "?").Select(p => p.Tty).ToHashSet();
 
+    /// <summary>
+    /// 放行账号（维护口那个）名下会话占着的终端。整条会话的进程都挂在这个终端上：
+    /// 服务端的 <c>script</c>/<c>su</c> 以 root 跑、里面的 shell 以该账号跑，全放过。
+    /// </summary>
+    private HashSet<string> ServiceTtys(IEnumerable<ProcessLine> rows)
+    {
+        if (allow.SessionUsers.Count == 0) return [];
+        return rows.Where(p => p.Tty != "?" && allow.SessionUsers.Any(p.IsUser))
+                   .Select(p => p.Tty).ToHashSet();
+    }
+
     /// <summary>除了他自己，还有谁坐在这台机器上。</summary>
     /// <remarks>
     /// <b>先认出他自己坐在哪。</b> busybox 的 <c>ps</c> 在终端那列给的是设备号
@@ -156,6 +169,7 @@ public sealed partial class AdminInspectors(AdminAllow allow, string machine, st
     {
         var rows = ProcessTable.Parse(output);
         var own = OwnTtys(rows);
+        var svc = ServiceTtys(rows);
 
         var findings = new List<AdminFinding>();
         var seen = new HashSet<string>();
@@ -163,6 +177,7 @@ public sealed partial class AdminInspectors(AdminAllow allow, string machine, st
         {
             if (p.Tty == "?" || p.IsKernelThread) continue;              // 没有终端就不是会话
             if (p.User == adminUser || own.Contains(p.Tty)) continue;    // 他自己那个会话
+            if (svc.Contains(p.Tty)) continue;                           // 维护口那个账号的会话，本身不算痕迹
             if (allow.Sessions.Any(t => p.TtyName.Equals(t, StringComparison.OrdinalIgnoreCase))) continue;
             // 一个会话有好几个进程（login、shell、正在跑的命令），按终端去重
             if (!seen.Add(p.Tty)) continue;

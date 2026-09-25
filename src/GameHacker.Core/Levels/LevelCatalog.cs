@@ -114,7 +114,8 @@ public sealed partial class LevelCatalog
 
         var processes = admin.Allow.Processes.ToList();
         var ports = admin.Allow.Ports.ToList();
-        int before = processes.Count + ports.Count;
+        var sessionUsers = admin.Allow.SessionUsers.ToList();
+        int before = processes.Count + ports.Count + sessionUsers.Count;
 
         foreach (var service in machine.Services)
         {
@@ -125,14 +126,19 @@ public sealed partial class LevelCatalog
         {
             processes.Add($"nc -lk -p {access.Port} *");
             ports.Add($"tcp/{access.Port}");
-            // 经维护口登录进来的那个 shell。玩家在这台机器上干活是这个口的用途，
-            // 本身不算痕迹 —— 真正会暴露他的是留下的东西（转发没关、工具没删、端口没收）
-            processes.Add("sh +m -i");
+            // 维护口在服务端开 pty 的 script 以 root 跑、自己没有终端（终端归它开给会话的
+            // 那个 pty），落不到会话终端上，单独放行它这条固定调用
+            processes.Add("script -q -E never *");
+            // 玩家从维护口登录进来干活正是这个口的用途，本身不算痕迹：连他整条会话
+            //（服务端开 pty 的 script/su、里面那个 shell）一起放过。真正会暴露他的是
+            // 留下的东西 —— 转发没关、工具没删、端口没收
+            sessionUsers.Add(access.User);
         }
 
-        return before == processes.Count + ports.Count
+        return before == processes.Count + ports.Count + sessionUsers.Count
             ? level
-            : level with { Admin = admin with { Allow = admin.Allow with { Processes = processes, Ports = ports } } };
+            : level with { Admin = admin with { Allow = admin.Allow with
+                { Processes = processes, Ports = ports, SessionUsers = sessionUsers } } };
     }
 
     private static void Validate(string source, LevelDefinition level, List<string> errors)
@@ -224,11 +230,13 @@ public sealed partial class LevelCatalog
                 // blackwall 是「从玩家机接进别的机器」的上帝模式，接自己没有意义
                 if (m.Name == level.Machines[0].Name)
                     Error($"机器 {m.Name} 是玩家自己的机器，blackwall 是用来接进别人的机器的");
-                // 教学关专属：实战关写了会被运行时忽略，这里直接拦下免得作者以为它生效了
-                if (level.Track != LevelTrack.Tutorial)
-                    Error($"机器 {m.Name} 开了 blackwall，但它只在教学关（track: tutorial）生效");
+                // 两处都写才生效。只写了机器这边，作者多半以为它已经能用了
+                if (level.Blackwall == BlackwallMode.Off)
+                    Error($"机器 {m.Name} 开了 blackwall，但这一关没放出神器 —— 关卡里写 \"blackwall\": \"novice\" 或 \"story\"");
             }
         }
+        if (level.Blackwall != BlackwallMode.Off && !level.Machines.Any(m => m.Blackwall))
+            Error("这一关放出了神器 blackwall，却没有一台机器能被它接进去（机器上写 \"blackwall\": true）");
 
         if (level.Admin is { } admin)
         {
