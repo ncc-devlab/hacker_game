@@ -173,6 +173,66 @@ public class NoviceToolsIntegrationTests
         Assert.Contains("NO-ROUTE", Dump());
     }
 
+    /// <summary>
+    /// 从磁盘 switch_root 起来的玩家机（游戏里 0 号机就是这样）也要装上工具箱。
+    /// </summary>
+    /// <remarks>
+    /// 钉的是一个真踩到的坑：工具是在 <c>m0_install_tools</c> 里装的，而这台机器
+    /// 会 <c>switch_root</c> 进 qcow2、由 <c>stage2</c> 调这个函数。qcow2 里那份
+    /// common.sh 是烤镜像时装的，一旦它比 initramfs 旧、缺了这个新函数，stage2
+    /// 调用就会静默 "not found"，工具装不上、还查不出为什么 —— 前面两个用例跑的
+    /// 是纯内存机（走 <c>init</c>），恰好绕开了这条路，没能拦住。
+    /// 现在 init 在 switch_root 前把 initramfs 里那份 common.sh 覆盖进 newroot，
+    /// 单一真源，这个用例守着别再回退。
+    /// </remarks>
+    [SkippableFact]
+    public async Task 从磁盘起的玩家机也装上工具箱()
+    {
+        Skip.IfNot(TestImages.GuestImagesReady, TestImages.MissingImagesReason);
+        Skip.IfNot(File.Exists(TestImages.AlpineDisk),
+                   "缺少 alpine-main.qcow2，先跑 m0/scripts/02-build-alpine-rootfs.sh");
+
+        using var cts = new CancellationTokenSource(TimeSpan.FromMinutes(4));
+        var packets = new PacketLog();
+        await using var vSwitch = new VirtualSwitch([10], packets);
+        _ = vSwitch.RunAsync(cts.Token);
+
+        await using var ws = new QemuLauncher(TestImages.QemuPath);
+        var text = new ConsoleText();
+        ws.Start(new VmSpec
+        {
+            Name = "ws", KernelPath = TestImages.Kernel, InitrdPath = TestImages.Initrd,
+            // 有磁盘 -> 走 switch_root 到 qcow2，工具由 stage2 装（正是出过问题那条路）
+            DiskPath = TestImages.AlpineDisk, Ephemeral = true, MemoryMegabytes = 512,
+            Persona = HardwarePersona.Workstation,
+            Nics = [new VmNic("52:54:00:00:01:00", vSwitch.PortFor(10), "10.0.0.1/24")],
+            Tools = true,
+        });
+        ws.Console!.DataReceived += d => text.Append(d.Span);
+        _ = ws.Console!.RunAsync(cts.Token);
+        _ = ws.Control!.RunAsync(cts.Token);
+        await using var control = new ControlChannel(ws.Control!);
+        await control.WaitReadyAsync(Boot, cts.Token);
+        await control.WaitEventAsync("console", Boot, cts.Token);
+
+        string Dump() => text.ToString();
+        async Task Type(string command, int settleMs = 1500)
+        {
+            await ws.Console!.SendAsync(Encoding.UTF8.GetBytes(command + "\n"), cts.Token);
+            await Task.Delay(settleMs, cts.Token);
+        }
+
+        for (int i = 0; i < 4 && !Dump().Contains("warm-42"); i++) await Type("echo warm-$((6*7))");
+
+        // tools 得在 PATH 上真能跑，而不是只躺在 /usr/local/bin 里
+        await Type("command -v tools && tools");
+        Assert.Contains("mktunnel", Tail(Dump(), 20));
+
+        // 而且是能读的脚本 —— 新手模式的出口就是读懂它
+        await Type("head -1 /usr/local/bin/mktunnel");
+        Assert.Contains("#!/bin/sh", Dump());
+    }
+
     private static string Tail(string s, int lines) =>
         string.Join('\n', s.Replace("\r", "").Split('\n').TakeLast(lines));
 }

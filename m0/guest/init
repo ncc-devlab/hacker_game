@@ -22,6 +22,12 @@ if [ -n "$M0_ROOTDEV" ]; then
     n=0
     while [ ! -b "$M0_ROOTDEV" ] && [ $n -lt 50 ]; do sleep 0.1; n=$((n+1)); done
     if mount -t ext4 "$M0_ROOTDEV" /newroot; then
+        # common.sh 走单一真源：把 initramfs 里这份（01 每次重打包都是最新的）
+        # 覆盖进 newroot。qcow2 里那份是烤镜像时装的，改了 common.sh 却没重烤
+        # qcow2 就会过期 —— 那样 stage2 调用新加的函数（比如 m0_install_tools）
+        # 会静默 "not found"，新手工具装不上，人还查不出为什么。
+        mkdir -p /newroot/lib/m0
+        cp /lib/m0/common.sh /newroot/lib/m0/common.sh 2>/dev/null
         mount --move /proc /newroot/proc 2>/dev/null
         mount --move /sys  /newroot/sys  2>/dev/null
         mount --move /dev  /newroot/dev  2>/dev/null

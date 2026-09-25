@@ -15,7 +15,9 @@ CDN="https://dl-cdn.alpinelinux.org/alpine"
 
 ROOT="$RUN/alpine-root"
 RAW="$RUN/alpine-root.img"
-OUT="$IMAGES/alpine-main.qcow2"
+# OUT 可用环境变量覆盖：镜像正被运行中的 QEMU 锁着时，可以先烤到别处再 mv 覆盖，
+# 不必先关游戏（运行中的实例继续用旧 inode，新文件留给下次启动）。
+OUT="${OUT:-$IMAGES/alpine-main.qcow2}"
 
 cd "$IMAGES"
 [[ -f "$MR" ]] || { log "下载 $MR"; curl -fsSL -o "$MR" "$CDN/$ALPINE_BRANCH/releases/x86_64/$MR"; }
