@@ -286,12 +286,25 @@ m0_install_tools() {
 
     cat > /usr/local/bin/tools <<'TOOLS'
 #!/bin/sh
-echo "新手模式：这台机器上装了这几个工具"
+# 这台机器上装了哪些新手工具、各自什么时候用。逐个报出来，别只丢一句「有工具」。
+echo "你在 $(hostname)：$(ip -o -4 addr show 2>/dev/null | awk '$2!="lo"{print $2"="$4}' | tr '\n' ' ')"
 echo
-echo "  mktunnel   经跳板机把某个网段接过来（登录、查 sudo、开转发、加路由）"
+echo "新手模式给你装了这些（都是 shell 脚本，cat <名字> 看得见它敲了哪几条命令）："
 echo
-echo "每个都是 shell 脚本，cat 出来就能看见它到底敲了哪几条命令。"
-echo "看懂了就不用它了 —— 那才是这一模式的目的。"
+_any=0
+for _t in blackwall mktunnel; do
+    [ -x "/usr/local/bin/$_t" ] || continue
+    _any=1
+    case "$_t" in
+      blackwall) _d="给个 IP 直接接进那台机器（教学专用「神器」，实战关没有）  blackwall <ip>" ;;
+      mktunnel)  _d="经跳板机把某个网段接过来：登录/查 sudo/开转发/加路由  mktunnel <跳板机> <口> <账号> <口令> <网段>" ;;
+      *)         _d="" ;;
+    esac
+    printf '  %-10s %s\n' "$_t" "$_d"
+done
+[ "$_any" = 1 ] || echo "  （这台机器没装额外工具）"
+echo
+echo "看懂它敲的命令，你自己也敲得出来 —— 那时就不再需要它。这是新手模式的出口。"
 TOOLS
 
     cat > /usr/local/bin/mktunnel <<'MKTUNNEL'
