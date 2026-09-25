@@ -62,7 +62,8 @@ public partial class GameState : Node
     /// </summary>
     public static bool IsAutomated =>
         !string.IsNullOrWhiteSpace(System.Environment.GetEnvironmentVariable("GAMEHACKER_SELFTEST"))
-        || !string.IsNullOrWhiteSpace(System.Environment.GetEnvironmentVariable("GAMEHACKER_SCREENSHOT"));
+        || !string.IsNullOrWhiteSpace(System.Environment.GetEnvironmentVariable("GAMEHACKER_SCREENSHOT"))
+        || System.Environment.GetEnvironmentVariable("GAMEHACKER_PROBE_WINDOWS") is "1";
 
     /// <summary>
     /// 启动后直接进哪一关，不停在选关界面。<c>GAMEHACKER_LEVEL</c> 指定；

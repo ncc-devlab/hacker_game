@@ -1,3 +1,4 @@
+using System;
 using System.Collections.Generic;
 using System.Linq;
 using System.Text;
@@ -32,7 +33,9 @@ public static class SelfTest
     }
 
     /// <summary>跑完整套检查，返回是否全绿。</summary>
-    public static async Task<bool> RunAsync(Node host, Control terminal, string bootDetail)
+    /// <param name="openExtraTerminal">桌面上双击「终端」图标会做的事。返回开出来的终端节点。</param>
+    public static async Task<bool> RunAsync(Node host, Control terminal, string bootDetail,
+                                            Func<Control?>? openExtraTerminal = null)
     {
         Results.Clear();
         Check("虚拟机启动并互通", bootDetail.Contains("互通"), bootDetail);
@@ -100,6 +103,33 @@ public static class SelfTest
 
         string dmesg = await CaptureAsync(host, terminal, "dmesg | grep -ci qemu");
         Check("dmesg 里没有 qemu 字样", dmesg.Contains("0"), Tail(dmesg));
+
+        // --- 桌面「终端」图标开出来的新终端 --------------------------------
+        // 窗口建了、串口没接的话，玩家看到的是一个敲不进字的终端 —— 实测踩到过：
+        // 规格里忘了要串口，Core 层的集成测试照样全绿，只有这条端到端的路看得出来
+        if (openExtraTerminal is not null)
+        {
+            var extra = openExtraTerminal();
+            if (extra is null)
+                Check("桌面上开得出新终端", false, "一个都开不出来");
+            else
+            {
+                await Task.Delay(1500);   // 等它补敲的那一下回车换回一行提示符
+                extra.GrabFocus();
+                await host.ToSignal(host.GetTree(), SceneTree.SignalName.ProcessFrame);
+                // 不能直接敲 tty：它的输出 /dev/ttyS2 里含有命令本身，会被 CaptureAsync 当成回显跳过
+                string tty = await CaptureAsync(host, extra, "echo EXTRA-$(tty)");
+                Check("桌面上新开的终端能输入并回显", tty.StartsWith("EXTRA-/dev/ttyS"), $"{tty} | focus_mode={extra.FocusMode} has_focus={extra.HasFocus()} "
+                      + $"owner={extra.GetViewport().GuiGetFocusOwner()?.Name} | {Tail(ScreenText(extra))}");
+
+                // 关回去，把焦点还给主终端，别影响后面的探针
+                Node walk = extra;
+                while (walk is not null && walk is not GameWindow) walk = walk.GetParent();
+                (walk as GameWindow)?.Close();
+                terminal.GrabFocus();
+                await host.ToSignal(host.GetTree(), SceneTree.SignalName.ProcessFrame);
+            }
+        }
 
         // --- 探针：玩家的真实路径（鼠标点击聚焦 + Tab/方向键）--------------
         // 放在最后：它要移动终端窗、重设根窗口尺寸、还会在 shell 里留下半截状态，

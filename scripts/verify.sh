@@ -361,6 +361,19 @@ else
         fi
     fi
 
+    # --- 窗口层叠 / 吸附 / 停靠 / 缩放自检（不需要虚拟机，几秒钟）---
+    if [ -z "$DOTNET" ]; then
+        step 0 'Godot 窗口自检' '跳过：没有 .NET SDK（见第 2 步）'
+    else
+        run_logged godot-winprobe 90 \
+            'Cannot instantiate C# script|Failed to load .NET runtime|hostfxr' \
+            env GAMEHACKER_LEVEL=lab-ping GAMEHACKER_PROBE_WINDOWS=1 \
+            "$GODOT" --headless --path "$PROJECT"
+        step "$([ "$RC" = 0 ] && echo 1 || echo 0)" 'Godot 窗口自检' \
+             "$(grep -c '^\[winprobe\] ok' "$OUT/godot-winprobe.out.txt" 2>/dev/null || echo 0) 项通过，退出码 $RC"
+        grep '^\[winprobe\]' "$OUT/godot-winprobe.out.txt" 2>/dev/null | sed 's/^/    /'
+    fi
+
     # --- 自检 ---
     if [ -z "$DOTNET" ]; then
         step 0 'Godot 自检' '跳过：没有 .NET SDK，C# 脚本编译不出来（见第 2 步）'
