@@ -159,6 +159,10 @@ m0_setup_sudo() {
     chown -R root:root /usr/bin/sudo /usr/bin/sudoedit /usr/bin/sudoreplay /usr/sbin/visudo \
         /usr/lib/sudo /etc/sudoers /etc/sudoers.d 2>/dev/null
     chmod 4755 /usr/bin/sudo
+    # 新版 sudo 默认 use_pty：命令跑在它自己再开的 pty 里，输入由它转发 ——
+    # 会把排在后面、还没轮到的输入一起吞掉（维护口上一口气灌进去的几条命令，
+    # 第二条 sudo 之后的全没了）。关掉它，和老版本 sudo 一个样
+    grep -q '^Defaults !use_pty' /etc/sudoers || echo 'Defaults !use_pty' >> /etc/sudoers
     chmod 0440 /etc/sudoers
     chmod 0750 /etc/sudoers.d
 }
@@ -218,9 +222,12 @@ m0_start_admin_tty() {
 # 于是玩家在 netstat 里扫得到它，在 ps 里看得见自己的会话，管理员也看得见；
 # 口令敲错了会进系统日志。没有一处是游戏逻辑假装出来的。
 #
-# 没有 pty：nc 把裸套接字接到脚本的 stdin/stdout 上，这就是老式维护口的样子。
-# 提示符得靠 sh -i 自己打，而且必须 +m 关掉作业控制 —— 没有终端时开着作业控制，
-# shell 起来就是哑的（实测：连上去之后一个字都不回）。
+# 登录之后会话跑在服务端的 pty 里，和真的 rlogind / telnetd 一样（用 script 开）。
+# 没有 pty 的话，sudo -i / sudo su / sudo sh 进去的 root shell 不是交互式的，
+# 一个提示符都不打，玩家以为卡住了。pty 的回显关着（-E never）：玩家这头的 nc
+# 是行模式，他的终端已经回显过一遍了。Tab 和方向键照样不行 —— 那得玩家自己
+# 在本地 stty raw -echo 再连，这正是真实世界里「把哑 shell 升级成终端」的手法。
+# 代价也是真的：会话有了终端号，管理员查会话时看得见他。
 #
 # 要在 m0_start_services <b>之前</b>跑：chpasswd 会往 syslog 写一句「口令已修改」，
 # 那等于开机就告诉玩家这机器上有个什么账号。
@@ -248,7 +255,7 @@ m0_open_access() {
     # 登录脚本本身摆在机器上，玩家进来之后读得到它 —— 这机器怎么认人是可侦察的
     cat > /usr/sbin/rlogind <<'RLOGIND'
 #!/bin/sh
-# 远程维护口。stderr 也接到套接字上，否则 shell 的提示符（ash 打在 stderr 上）出不去。
+# 远程维护口。stderr 也接到套接字上，否则登录失败那句话出不去。
 exec 2>&1
 echo "$(hostname) maintenance port"
 printf 'login: ';    read -r u
@@ -263,7 +270,8 @@ if [ -z "$h" ] || [ "$(cryptpw -m sha512 -S "${salt#\$6\$}" "$p")" != "$h" ]; th
     exit 1
 fi
 logger -t rlogind "login for $u"
-exec su -s /bin/sh -l "$u" -c 'exec sh +m -i'
+# 服务端开一个 pty 再登录。nc 给不了窗口大小，按老终端的 24x80 算
+exec script -q -E never -c "stty rows 24 cols 80; exec su -s /bin/sh -l $u -c 'exec sh -i'" /dev/null
 RLOGIND
     chmod 0755 /usr/sbin/rlogind
     nc -lk -p "$_port" -e /usr/sbin/rlogind >/dev/null 2>&1 &

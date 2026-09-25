@@ -20,6 +20,10 @@ EXTRA_MODULES="${EXTRA_MODULES:-ext4 e1000e sd_mod}"
 # （sudo 要的 musl、zlib 都在）。sudo：管理员改别人口令、玩家侦察 sudo -l 都靠它；
 # busybox 没有 setuid，它的 su / passwd 在普通账号下用不了。
 EXTRA_PACKAGES="${EXTRA_PACKAGES:-sudo}"
+# 只要包里某一个文件的（包名:路径）。整包拷进来会带一堆依赖不在的二进制，跑不起来。
+# script：维护口靠它在服务端开 pty（真的 rlogind 就是这么做的），
+# 没有终端的话 sudo -i / su 进去一个提示符都不打，玩家以为卡住了。它只依赖 libc。
+EXTRA_FILES="${EXTRA_FILES:-util-linux-misc:/usr/bin/script}"
 PKGROOT="$RUN/pkgroot"
 
 [[ -f "$SRC" ]] || die "缺少 $SRC，先跑 00-fetch-images.sh"
@@ -55,12 +59,13 @@ if [[ -n "$EXTRA_MODULES" ]]; then
   depmod -b "$WORK" "$KVER"
 fi
 
-if [[ -n "$EXTRA_PACKAGES" ]]; then
-  for p in $EXTRA_PACKAGES; do
+FETCH_PACKAGES="$EXTRA_PACKAGES $(for f in $EXTRA_FILES; do printf '%s ' "${f%%:*}"; done)"
+if [[ -n "${FETCH_PACKAGES// /}" ]]; then
+  for p in $FETCH_PACKAGES; do
     [[ -d "$PKGROOT/lib/apk/db" ]] && grep -qx "P:$p" "$PKGROOT/lib/apk/db/installed" && continue
-    log "取软件包 $EXTRA_PACKAGES（缓存到 $PKGROOT）"
+    log "取软件包 $FETCH_PACKAGES（缓存到 $PKGROOT）"
     rm -rf "$PKGROOT"
-    m0_apk_newroot "$PKGROOT" $EXTRA_PACKAGES >/dev/null
+    m0_apk_newroot "$PKGROOT" $FETCH_PACKAGES >/dev/null
     break
   done
 
@@ -79,7 +84,12 @@ if [[ -n "$EXTRA_PACKAGES" ]]; then
       cp -a "$PKGROOT/$f" "$WORK/$f"
     done
   done
-  # 属主和 setuid 位在这里给不了（非 root 打包），开机时由 m0_setup_sudo 补上
+  for f in $EXTRA_FILES; do
+    log "装入 ${f#*:}（取自 ${f%%:*}）"
+    mkdir -p "$WORK/$(dirname "${f#*:}")"
+    cp -a "$PKGROOT/${f#*:}" "$WORK/${f#*:}"
+  done
+  # setuid 位在这里给不了（非 root 打包），开机时由 m0_setup_sudo 补上
 fi
 
 log "装入 m0/guest/{init,common.sh}"
@@ -90,6 +100,9 @@ install -d "$WORK/lib/m0"
 install -m 0644 "$M0_ROOT/guest/common.sh" "$WORK/lib/m0/common.sh"
 
 log "重新打包 -> $OUT"
-( cd "$WORK" && find . -print0 | cpio --null -o -H newc --quiet ) | gzip -9 > "$OUT"
+# 属主一律记成 root：解包、拷文件都是以普通用户做的，不改的话整个根文件系统
+# 在客户机里归 uid 1000 —— 而第一个建出来的普通账号（跳板机上玩家那个）正好就是
+# uid 1000，等于不用 sudo 就能改 /etc。sudo 也会为 sudo.conf 的属主当场报警
+( cd "$WORK" && find . -print0 | cpio --null -o -H newc -R 0:0 --quiet ) | gzip -9 > "$OUT"
 ls -lh "$OUT" | awk '{print "  " $5 "  " $9}'
 log "完成"
